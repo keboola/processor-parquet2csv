@@ -14,7 +14,7 @@ KEY_PRIMARY_KEYS = 'primary_keys'
 KEY_FILENAME = 'include_filename'
 
 MANDATORY_PARAMETERS = [KEY_MODE, KEY_TABLE_NAME]
-SUPPORTED_MODES = ['fast', 'check', 'strict']
+SUPPORTED_MODES = ['fast']  # , 'check', 'strict']
 
 FILENAME_COLUMN = 'parquet_filename'
 
@@ -81,7 +81,7 @@ class ParquetParser(KBCEnvHandler):
 
     def getParquetFiles(self):
 
-        files_in_path = os.path.join(self.data_path, 'in', 'files')
+        files_in_path = os.path.join(self.data_path, 'in', 'files/')
         all_parquet_files = glob.glob(os.path.join(files_in_path, '**', '*.pq'), recursive=True) + \
             glob.glob(os.path.join(files_in_path, '**', '*.parquet'), recursive=True)
 
@@ -92,6 +92,7 @@ class ParquetParser(KBCEnvHandler):
         else:
             logging.debug(all_parquet_files)
             self.files = all_parquet_files
+            self.files_clean = [x.replace(files_in_path, '') for x in all_parquet_files]
 
     def processParquet(self):
 
@@ -112,7 +113,7 @@ class ParquetParser(KBCEnvHandler):
             all_cols += [FILENAME_COLUMN]
 
         try:
-            for df, filename in zip(pq.iter_row_groups(columns=self.__columns), self.files):
+            for df, filename in zip(pq.iter_row_groups(columns=self.__columns), self.files_clean):
                 if self.__filename is True:
                     df[FILENAME_COLUMN] = filename
                 df[all_cols].to_csv(table_path, mode='a', header=False, index=False)
