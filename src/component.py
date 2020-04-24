@@ -124,7 +124,7 @@ class ParquetParser(KBCEnvHandler):
         with open(manifest_path, 'w') as _man:
             json.dump({
                 'columns': all_cols,
-                'primary_keys': self.__primary_keys,
+                'primary_key': self.__primary_keys,
                 'incremental': self.__incremental
             }, _man)
 
