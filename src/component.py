@@ -24,8 +24,7 @@ class ParquetParser(KBCEnvHandler):
     def __init__(self):
 
         super().__init__(mandatory_params=MANDATORY_PARAMETERS,
-                         log_level='INFO',
-                         data_path='./data')
+                         log_level='INFO')
 
         self.validateParameters()
 
