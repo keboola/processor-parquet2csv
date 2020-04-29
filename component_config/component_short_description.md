@@ -1,1 +1,1 @@
-Testing functional sample extractor for purposes of the python component template. 
+Apache Parquet is a free and open-source column-oriented data storage format of the Apache Hadoop ecosystem.
