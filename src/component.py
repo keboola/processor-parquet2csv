@@ -17,7 +17,6 @@ KEY_DEBUG = 'debug'
 
 MANDATORY_PARAMETERS = [KEY_MODE, KEY_TABLE_NAME]
 SUPPORTED_MODES = ["fast", "fill", "strict"]
-
 FILENAME_COLUMN = 'parquet_filename'
 
 
@@ -31,7 +30,7 @@ class ParquetParser(KBCEnvHandler):
             self.validate_config(MANDATORY_PARAMETERS)
 
         except ValueError as e:
-            logging.exception(f"Missing mandatory fields {e} in configuration.")
+            logging.error(f"Missing mandatory fields {e} in configuration.")
             sys.exit(1)
 
         self.par_mode = self.cfg_params[KEY_MODE]
@@ -99,7 +98,7 @@ class ParquetParser(KBCEnvHandler):
                 _cs = int(self.par_chunk_size)
 
             except ValueError:
-                logging.exception("Parameter \"chunk_size\" must be either an integer or \"null\".")
+                logging.error("Parameter \"chunk_size\" must be either an integer or \"null\".")
                 sys.exit(1)
 
             self.par_chunk_size = _cs if _cs > 0 else None
