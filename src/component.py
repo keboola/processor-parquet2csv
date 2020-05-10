@@ -19,6 +19,8 @@ MANDATORY_PARAMETERS = [KEY_MODE, KEY_TABLE_NAME]
 SUPPORTED_MODES = ["fast", "fill", "strict"]
 FILENAME_COLUMN = 'parquet_filename'
 
+DEFAULT_CHUNK_SIZE = 10000
+
 
 class ParquetParser(KBCEnvHandler):
 
@@ -91,7 +93,7 @@ class ParquetParser(KBCEnvHandler):
             pass
 
         if self.par_chunk_size is None:
-            pass
+            self.par_chunk_size = DEFAULT_CHUNK_SIZE
 
         else:
             try:
@@ -101,7 +103,7 @@ class ParquetParser(KBCEnvHandler):
                 logging.error("Parameter \"chunk_size\" must be either an integer or \"null\".")
                 sys.exit(1)
 
-            self.par_chunk_size = _cs if _cs > 0 else None
+            self.par_chunk_size = _cs if _cs > 0 else DEFAULT_CHUNK_SIZE
 
     def getParquetFiles(self):
 

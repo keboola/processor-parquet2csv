@@ -40,7 +40,7 @@ A sample of the configuration object:
 - `incremental` (optional) - A boolean value marking, whether to utilize incremental load to storage. If not specified, full load is performed.
 - `primary_keys` (optional) - An array of primary keys.
 - `include_filename` (optional) - A boolean value. If `true`, an extra column `parquet_filename` with name of data parquet origin file will be included in the output table. Default is `false`.
-- `chunk_size` (optional) - A positive integer specifying the size of a chunk, which should be processed in memory. In general, the lower the chunk size, the lower memory consumption, but slower processing and vice versa. If `chunk_size` is not specified or is a negative number, the whole file is processed in memory without batching. Default is no batching used.
+- `chunk_size` (optional) - A positive integer specifying the size of a chunk, which should be processed in memory. In general, the lower the chunk size, the lower memory consumption, but slower processing and vice versa. If `chunk_size` is not specified or is a negative number the batch size defaults to 10000.
 - `columns` (optional) - An array of columns, which will be read from the Parquet file. If any of the columns specified here is not present in the Parquet file, it will be ignored. If mode is set to `strict`, this parameter is required, since it defines the schema, which should be checked.
 - `debug` - A boolean value. If `true`, extra logging is added. Default is `false`.
 
