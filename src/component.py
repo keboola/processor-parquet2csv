@@ -62,7 +62,7 @@ class ParquetParser(KBCEnvHandler):
 
         # table name validation
         if not isinstance(self.par_table_name, str):
-            logging.error(f"Parameter \"table_name\" must be of type string.")
+            logging.error("Parameter \"table_name\" must be of type string.")
             sys.exit(1)
 
         elif self.par_table_name.strip() == '':
@@ -270,7 +270,7 @@ class ParquetParser(KBCEnvHandler):
                 missing_columns = list(set(columns) - set(_pq_file.schema.names) - set([FILENAME_COLUMN]))
                 if missing_columns != []:
                     logging.error(f"Missing columns {missing_columns} in file {filename}, which were defined " +
-                                  f"in configuration parameter \"columns\".\n" +
+                                  "in configuration parameter \"columns\".\n" +
                                   f"Available columns are {_pq_file.schema.names}.")
                     sys.exit(1)
 
