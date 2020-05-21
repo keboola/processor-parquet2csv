@@ -4,6 +4,7 @@ import logging
 import os
 import sys
 import pyarrow.parquet as pq
+import pandas as pd
 from kbc.env_handler import KBCEnvHandler
 
 KEY_MODE = 'mode'
@@ -192,7 +193,7 @@ class ParquetParser(KBCEnvHandler):
                 _pq_batches = _pq_file.to_batches(max_chunksize=self.par_chunk_size)
 
                 for _pq_batch in _pq_batches:
-                    _df_batch = _pq_batch.to_pandas()
+                    _df_batch = pd.DataFrame(_pq_batch.to_pydict(), dtype=str)
 
                     for _c in columns:
 
@@ -233,7 +234,7 @@ class ParquetParser(KBCEnvHandler):
 
                 for _pq_batch in _pq_batches:
 
-                    _df_batch = _pq_batch.to_pandas()
+                    _df_batch = pd.DataFrame(_pq_batch.to_pydict(), dtype=str)
 
                     for _c in schema_columns:
 
@@ -277,7 +278,7 @@ class ParquetParser(KBCEnvHandler):
 
                 for _pq_batch in _pq_batches:
 
-                    _df_batch = _pq_batch.to_pandas()
+                    _df_batch = pd.DataFrame(_pq_batch.to_pydict(), dtype=str)
                     if FILENAME_COLUMN in columns:
                         _df_batch[FILENAME_COLUMN] = filename
 
