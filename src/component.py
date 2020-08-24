@@ -15,6 +15,7 @@ KEY_PRIMARY_KEYS = 'primary_keys'
 KEY_FILENAME = 'include_filename'
 KEY_CHUNKSIZE = 'chunk_size'
 KEY_DEBUG = 'debug'
+KEY_EXTENSION_MASK = 'file_mask'
 
 MANDATORY_PARAMETERS = [KEY_MODE, KEY_TABLE_NAME]
 SUPPORTED_MODES = ["fast", "fill", "strict"]
@@ -45,6 +46,7 @@ class ParquetParser(KBCEnvHandler):
         self.par_chunk_size = self.cfg_params.get(KEY_CHUNKSIZE, None)
         self.par_debug = self.cfg_params.get(KEY_DEBUG, False)
         self.files_in_path = os.path.join(self.data_path, 'in', 'files')
+        self.par_extension_mask = self.cfg_params.get(KEY_EXTENSION_MASK, '*.parquet')
 
         if self.par_debug is True:
             logging.getLogger().setLevel('DEBUG')
@@ -108,7 +110,7 @@ class ParquetParser(KBCEnvHandler):
 
     def getParquetFiles(self):
 
-        all_parquet_files = glob.glob(os.path.join(self.files_in_path, '**', '*.parquet'), recursive=True)
+        all_parquet_files = glob.glob(os.path.join(self.files_in_path, '**', self.par_extension_mask), recursive=True)
 
         if len(all_parquet_files) == 0:
             logging.info("No parquet files found.")

@@ -23,6 +23,7 @@ A sample of the configuration object:
         "include_filename": false,
         "debug": true,
         "chunk_size": 5000,
+        "file_mask": "export*.parquet",
         "columns": [
             "id",
             "order_id",
@@ -42,6 +43,7 @@ A sample of the configuration object:
 - `include_filename` (optional) - A boolean value. If `true`, an extra column `parquet_filename` with name of data parquet origin file will be included in the output table. Default is `false`.
 - `chunk_size` (optional) - A positive integer specifying the size of a chunk, which should be processed in memory. In general, the lower the chunk size, the lower memory consumption, but slower processing and vice versa. If `chunk_size` is not specified or is a negative number the batch size defaults to 10000.
 - `columns` (optional) - An array of columns, which will be read from the Parquet file. If any of the columns specified here is not present in the Parquet file, it will be ignored. If mode is set to `strict`, this parameter is required, since it defines the schema, which should be checked.
+  - `file_mask` (optional) - A glob-like syntax defining files, which should be included. Can be used for filtering files, or extensions. When not specified, defaults to `*.parquet`, i.e. all files with `.parquet` extension are included.
 - `debug` - A boolean value. If `true`, extra logging is added. Default is `false`.
 
 ### Different `mode` parameter specification
