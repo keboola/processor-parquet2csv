@@ -120,6 +120,8 @@ class ParquetParser(KBCEnvHandler):
             self.var_pq_files_paths = all_parquet_files
             self.var_pq_files_names = [x.replace(self.files_in_path, '') for x in all_parquet_files]
 
+            logging.debug(f"Processing {len(self.var_pq_files_names)} files. Paths:\n{self.var_pq_files_paths}.")
+
     def processParquet(self):
 
         path_table = os.path.join(self.tables_out_path, self.par_table_name)

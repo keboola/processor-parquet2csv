@@ -1,4 +1,4 @@
 https://bitbucket.org/kds_consulting_team/keboola-python-util-lib/get/0.2.9.zip#egg=kbc
 python-snappy
 fastparquet
-pyarrow
+pyarrow==0.17.1
