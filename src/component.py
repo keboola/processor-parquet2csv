@@ -117,8 +117,14 @@ class ParquetParser(KBCEnvHandler):
             sys.exit(0)
 
         else:
-            self.var_pq_files_paths = all_parquet_files
-            self.var_pq_files_names = [x.replace(self.files_in_path, '') for x in all_parquet_files]
+            nonempty_parquet_files = [path for path in all_parquet_files if os.path.getsize(path) > 0]
+            empty_parquet_files = [path for path in all_parquet_files if os.path.getsize(path) == 0]
+
+            logging.info(f"Skipping {len(empty_parquet_files)} empty files.")
+            logging.debug(f"Paths of empty files: {empty_parquet_files}.")
+
+            self.var_pq_files_paths = nonempty_parquet_files
+            self.var_pq_files_names = [x.replace(self.files_in_path, '') for x in nonempty_parquet_files]
 
             logging.debug(f"Processing {len(self.var_pq_files_names)} files. Paths:\n{self.var_pq_files_paths}.")
 
@@ -163,11 +169,12 @@ class ParquetParser(KBCEnvHandler):
         with open(table_path, 'w') as out_results:
 
             for path, filename in zip(self.var_pq_files_paths, self.var_pq_files_names):
+                logging.debug("Reading schema.")
 
-                _pq_file = pq.read_table(path, columns=self.par_table_columns)
+                _pq_file_schema = pq.read_schema(path)
 
                 if schema is None:
-                    schema = _pq_file.schema
+                    schema = _pq_file_schema
 
                     if schema.names == [] and self.par_table_columns is not None:
                         logging.error("Schema is empty. Make sure parameter \"columns\" specifies correct columns " +
@@ -194,6 +201,7 @@ class ParquetParser(KBCEnvHandler):
                 else:
                     pass
 
+                _pq_file = pq.read_table(path, columns=self.par_table_columns)
                 _pq_batches = _pq_file.to_batches(max_chunksize=self.par_chunk_size)
 
                 for _pq_batch in _pq_batches:
