@@ -169,7 +169,7 @@ class ParquetParser(KBCEnvHandler):
         with open(table_path, 'w') as out_results:
 
             for path, filename in zip(self.var_pq_files_paths, self.var_pq_files_names):
-                logging.debug("Reading schema.")
+                logging.debug(f"Converting file {path} to csv.")
 
                 _pq_file_schema = pq.read_schema(path)
 
