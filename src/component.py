@@ -18,7 +18,7 @@ KEY_DEBUG = 'debug'
 KEY_EXTENSION_MASK = 'file_mask'
 
 MANDATORY_PARAMETERS = [KEY_MODE, KEY_TABLE_NAME]
-SUPPORTED_MODES = ["fast", "fill", "strict"]
+SUPPORTED_MODES = ["fast", "fill", "strict"]  # , "pandas"]
 FILENAME_COLUMN = 'parquet_filename'
 
 DEFAULT_CHUNK_SIZE = 10000
@@ -121,12 +121,12 @@ class ParquetParser(KBCEnvHandler):
             empty_parquet_files = [path for path in all_parquet_files if os.path.getsize(path) == 0]
 
             logging.info(f"Skipping {len(empty_parquet_files)} empty files.")
-            logging.debug(f"Paths of empty files: {empty_parquet_files}.")
+            # logging.debug(f"Paths of empty files: {[x.replace(self.files_in_path, '') for x in empty_parquet_files]}.") # noqa
 
             self.var_pq_files_paths = nonempty_parquet_files
             self.var_pq_files_names = [x.replace(self.files_in_path, '') for x in nonempty_parquet_files]
 
-            logging.debug(f"Processing {len(self.var_pq_files_names)} files. Paths:\n{self.var_pq_files_paths}.")
+            logging.debug(f"Processing {len(self.var_pq_files_names)} files. Names:\n{self.var_pq_files_names}.")
 
     def processParquet(self):
 
@@ -140,6 +140,9 @@ class ParquetParser(KBCEnvHandler):
 
         elif self.par_mode == 'strict':
             _columns = self._strictProces(path_table)
+
+        # elif self.par_mode == 'pandas':
+        #     self._pandasProcess(path_table)
 
         else:
             logging.error(f"Unsupported mode {self.par_mode}.")
@@ -161,6 +164,37 @@ class ParquetParser(KBCEnvHandler):
                 _man_file
             )
 
+    # def _pandasProcess(self, table_path):
+
+    #     with open(table_path, 'w') as out_results:
+
+    #         for path, filename in zip(self.var_pq_files_paths, self.var_pq_files_names):
+
+    #             logging.info(f"Converting file {path} to csv.")
+    #             _df = pd.read_parquet(path, memory_map=False)
+    #             _df.to_csv(out_results, index=False, header=False)
+
+    def _processFastBatch(self, pq_path, out_table, columns, filename):
+
+        _pq_file = pq.read_table(pq_path, columns=self.par_table_columns)
+        _pq_batches = _pq_file.to_batches(max_chunksize=self.par_chunk_size)
+
+        for _pq_batch in _pq_batches:
+            _df_batch = pd.DataFrame(_pq_batch.to_pydict(), dtype=str)
+
+            for _c in columns:
+
+                if _c not in _df_batch.columns:
+                    if _c == FILENAME_COLUMN:
+                        _df_batch[_c] = filename
+
+                    else:
+                        _df_batch[_c] = ''
+
+            _df_batch[columns].to_csv(out_table, header=False, index=False, na_rep='')
+
+        logging.debug(f"Converted {pq_path} to csv. Rows: {_pq_file.num_rows}.")
+
     def _fastProcess(self, table_path):
 
         schema = None
@@ -169,7 +203,7 @@ class ParquetParser(KBCEnvHandler):
         with open(table_path, 'w') as out_results:
 
             for path, filename in zip(self.var_pq_files_paths, self.var_pq_files_names):
-                logging.debug(f"Converting file {path} to csv.")
+                logging.info(f"Converting file {path} to csv.")
 
                 _pq_file_schema = pq.read_schema(path)
 
@@ -201,24 +235,26 @@ class ParquetParser(KBCEnvHandler):
                 else:
                     pass
 
-                _pq_file = pq.read_table(path, columns=self.par_table_columns)
-                _pq_batches = _pq_file.to_batches(max_chunksize=self.par_chunk_size)
+                self._processFastBatch(path, out_results, columns, filename)
 
-                for _pq_batch in _pq_batches:
-                    _df_batch = pd.DataFrame(_pq_batch.to_pydict(), dtype=str)
+                # _pq_file = pq.read_table(path, columns=self.par_table_columns)
+                # _pq_batches = _pq_file.to_batches(max_chunksize=self.par_chunk_size)
 
-                    for _c in columns:
+                # for _pq_batch in _pq_batches:
+                #     _df_batch = pd.DataFrame(_pq_batch.to_pydict(), dtype=str)
 
-                        if _c not in _df_batch.columns:
-                            if _c == FILENAME_COLUMN:
-                                _df_batch[_c] = filename
+                #     for _c in columns:
 
-                            else:
-                                _df_batch[_c] = ''
+                #         if _c not in _df_batch.columns:
+                #             if _c == FILENAME_COLUMN:
+                #                 _df_batch[_c] = filename
 
-                    _df_batch[columns].to_csv(out_results, header=False, index=False, na_rep='')
+                #             else:
+                #                 _df_batch[_c] = ''
 
-                logging.debug(f"Converted {filename} to csv. Rows: {_pq_file.num_rows}.")
+                #     _df_batch[columns].to_csv(out_results, header=False, index=False, na_rep='')
+
+                # logging.debug(f"Converted {filename} to csv. Rows: {_pq_file.num_rows}.")
 
         return columns
 
