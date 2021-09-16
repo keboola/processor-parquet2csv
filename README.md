@@ -2,7 +2,7 @@
 
 Parquet processor utilizes the [pyarrow](https://pypi.org/project/pyarrow/) library to process Parquet files and convert them into a single .csv file. A single configuration, in which the Parquet processor is used, should contain the files which belong to one table only and thus maintaining one configuration, one table rule.
 
-Parquet processor automatically filters all files from `/data/in/files` folder, converts them to a .csv format, and outputs to `/data/out/files` folder.
+Parquet processor automatically filters all files from `/data/in/files` folder, converts them to a .csv format, and outputs to `/data/out/tables` folder.
 
 ## Configuration:
 
