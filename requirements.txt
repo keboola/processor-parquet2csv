@@ -1,4 +1,5 @@
-https://bitbucket.org/kds_consulting_team/keboola-python-util-lib/get/0.2.9.zip#egg=kbc
+keboola.component==1.6.3
 python-snappy
 fastparquet
-pyarrow==0.17.1
+pyarrow
+https://bitbucket.org/kds_consulting_team/datadirtest/get/1.8.2.zip#egg=datadirtest

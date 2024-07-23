@@ -1,0 +1,14 @@
+{
+  "parameters": {
+    "mode": "fill",
+    "table_name": "table.csv",
+    "incremental": true,
+    "primary_keys": [
+      "order_id"
+    ],
+    "include_filename": true,
+    "debug": true,
+    "columns": []
+  },
+  "image_parameters": {}
+}

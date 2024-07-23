@@ -5,7 +5,9 @@ import os
 import sys
 import pyarrow.parquet as pq
 import pandas as pd
-from kbc.env_handler import KBCEnvHandler
+from keboola.component import ComponentBase, UserException
+from keboola.component.dao import TableDefinition, SupportedDataTypes, BaseType, ColumnDefinition
+
 
 KEY_MODE = 'mode'
 KEY_TABLE_COLUMNS = 'columns'
@@ -24,14 +26,14 @@ FILENAME_COLUMN = 'parquet_filename'
 DEFAULT_CHUNK_SIZE = 10000
 
 
-class ParquetParser(KBCEnvHandler):
+class ParquetParser(ComponentBase):
 
     def __init__(self):
-
-        super().__init__(mandatory_params=MANDATORY_PARAMETERS, log_level='INFO')
+        ComponentBase.__init__(self)
+        self.cfg_params = self.configuration.parameters
 
         try:
-            self.validate_config(MANDATORY_PARAMETERS)
+            self.validate_configuration_parameters(MANDATORY_PARAMETERS)
 
         except ValueError as e:
             logging.error(f"Missing mandatory fields {e} in configuration.")
@@ -45,7 +47,7 @@ class ParquetParser(KBCEnvHandler):
         self.par_include_filename = bool(self.cfg_params.get(KEY_FILENAME, False))
         self.par_chunk_size = self.cfg_params.get(KEY_CHUNKSIZE, None)
         self.par_debug = self.cfg_params.get(KEY_DEBUG, False)
-        self.files_in_path = os.path.join(self.data_path, 'in', 'files')
+        self.asdf = None
         self.par_extension_mask = self.cfg_params.get(KEY_EXTENSION_MASK, '*.parquet')
 
         if self.par_debug is True:
@@ -267,7 +269,10 @@ class ParquetParser(KBCEnvHandler):
             _pq_file = pq.read_table(path, columns=self.par_table_columns)
             schema_columns += _pq_file.schema.names
 
-        schema_columns = list(set(schema_columns))
+        # to keep order of columns
+        seen = set()
+        schema_columns = [x for x in schema_columns if not (x in seen or seen.add(x))]
+
         logging.debug(schema_columns)
 
         if self.par_include_filename is True:
@@ -277,7 +282,8 @@ class ParquetParser(KBCEnvHandler):
 
             for path, filename in zip(self.var_pq_files_paths, self.var_pq_files_names):
 
-                _pq_file = pq.read_table(path, columns=schema_columns)
+                _pq_file = pq.read_table(path)
+
                 _pq_batches = _pq_file.to_batches(max_chunksize=self.par_chunk_size)
 
                 for _pq_batch in _pq_batches:

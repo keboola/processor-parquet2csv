@@ -1,0 +1,1 @@
+{"columns": ["DATE", "TIMESTAMP", "BOOLEAN", "FLOAT", "INTEGER", "NUMERIC", "parquet_filename", "parquet_filename"], "incremental": true, "primary_key": ["order_id"]}
