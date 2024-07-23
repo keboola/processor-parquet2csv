@@ -1,14 +1,14 @@
 {
   "parameters": {
-    "mode": "strict",
-    "columns": ["DATE", "TIMESTAMP", "BOOLEAN", "FLOAT", "INTEGER", "NUMERIC"],
+    "mode": "fast",
     "table_name": "table.csv",
     "incremental": true,
     "primary_keys": [
       "TIMESTAMP"
     ],
     "include_filename": true,
-    "debug": true
+    "debug": true,
+    "columns": []
   },
   "image_parameters": {}
 }

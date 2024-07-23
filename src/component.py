@@ -2,12 +2,12 @@ import glob
 import json
 import logging
 import os
-import sys
-import pyarrow.parquet as pq
+
+import pyarrow
+from pyarrow import parquet as pq, types, string
 import pandas as pd
 from keboola.component import ComponentBase, UserException
-from keboola.component.dao import TableDefinition, SupportedDataTypes, BaseType, ColumnDefinition
-
+from keboola.component.dao import BaseType, ColumnDefinition
 
 KEY_MODE = 'mode'
 KEY_TABLE_COLUMNS = 'columns'
@@ -26,7 +26,7 @@ FILENAME_COLUMN = 'parquet_filename'
 DEFAULT_CHUNK_SIZE = 10000
 
 
-class ParquetParser(ComponentBase):
+class Component(ComponentBase):
 
     def __init__(self):
         ComponentBase.__init__(self)
@@ -36,8 +36,7 @@ class ParquetParser(ComponentBase):
             self.validate_configuration_parameters(MANDATORY_PARAMETERS)
 
         except ValueError as e:
-            logging.error(f"Missing mandatory fields {e} in configuration.")
-            sys.exit(1)
+            raise UserException(f"Missing mandatory fields {e} in configuration.")
 
         self.par_mode = self.cfg_params[KEY_MODE]
         self.par_table_name = self.cfg_params[KEY_TABLE_NAME]
@@ -47,7 +46,6 @@ class ParquetParser(ComponentBase):
         self.par_include_filename = bool(self.cfg_params.get(KEY_FILENAME, False))
         self.par_chunk_size = self.cfg_params.get(KEY_CHUNKSIZE, None)
         self.par_debug = self.cfg_params.get(KEY_DEBUG, False)
-        self.asdf = None
         self.par_extension_mask = self.cfg_params.get(KEY_EXTENSION_MASK, '*.parquet')
 
         if self.par_debug is True:
@@ -61,17 +59,14 @@ class ParquetParser(ComponentBase):
 
         # mode validation
         if self.par_mode not in SUPPORTED_MODES:
-            logging.error(f"Unsupported mode {self.par_mode}. Supported modes are: {SUPPORTED_MODES}.")
-            sys.exit(1)
+            raise UserException(f"Unsupported mode {self.par_mode}. Supported modes are: {SUPPORTED_MODES}.")
 
         # table name validation
         if not isinstance(self.par_table_name, str):
-            logging.error("Parameter \"table_name\" must be of type string.")
-            sys.exit(1)
+            raise UserException("Parameter \"table_name\" must be of type string.")
 
         elif self.par_table_name.strip() == '':
-            logging.error("No table name provided.")
-            sys.exit(1)
+            raise UserException("No table name provided.")
 
         elif self.par_table_name.endswith('.csv') is False:
             self.par_table_name = self.par_table_name + '.csv'
@@ -81,21 +76,13 @@ class ParquetParser(ComponentBase):
 
         # table columns validation
         if not isinstance(self.par_table_columns, list):
-            logging.error("Parameter \"columns\" must be of type list.")
-            sys.exit(1)
+            raise UserException("Parameter \"columns\" must be of type list.")
 
         elif len(self.par_table_columns) == 0:
             self.par_table_columns = None
 
-        else:
-            pass
-
         if not isinstance(self.par_primary_keys, list):
-            logging.error("Parameter \"primary_keys\" must be of type list.")
-            sys.exit(1)
-
-        else:
-            pass
+            raise UserException("Parameter \"primary_keys\" must be of type list.")
 
         if self.par_chunk_size is None:
             self.par_chunk_size = DEFAULT_CHUNK_SIZE
@@ -105,18 +92,18 @@ class ParquetParser(ComponentBase):
                 _cs = int(self.par_chunk_size)
 
             except ValueError:
-                logging.error("Parameter \"chunk_size\" must be either an integer or \"null\".")
-                sys.exit(1)
+                raise UserException("Parameter \"chunk_size\" must be either an integer or \"null\".")
 
             self.par_chunk_size = _cs if _cs > 0 else DEFAULT_CHUNK_SIZE
 
     def getParquetFiles(self):
 
         all_parquet_files = glob.glob(os.path.join(self.files_in_path, '**', self.par_extension_mask), recursive=True)
+        # to ensure consistent order on all platforms
+        all_parquet_files.sort()
 
         if len(all_parquet_files) == 0:
-            logging.info("No parquet files found.")
-            sys.exit(0)
+            raise UserException("No parquet files found.")
 
         else:
             nonempty_parquet_files = [path for path in all_parquet_files if os.path.getsize(path) > 0]
@@ -135,23 +122,42 @@ class ParquetParser(ComponentBase):
         path_table = os.path.join(self.tables_out_path, self.par_table_name)
 
         if self.par_mode == 'fast':
-            _columns = self._fastProcess(path_table)
+            _schema = self._fastProcess(path_table)
 
         elif self.par_mode == 'fill':
-            _columns = self._fillProcess(path_table)
+            _schema = self._fillProcess(path_table)
 
         elif self.par_mode == 'strict':
-            _columns = self._strictProces(path_table)
+            _schema = self._strictProces(path_table)
 
         # elif self.par_mode == 'pandas':
         #     self._pandasProcess(path_table)
 
         else:
-            logging.error(f"Unsupported mode {self.par_mode}.")
-            sys.exit(1)
+            raise UserException(f"Unsupported mode {self.par_mode}.")
 
-        self.createManifest(path_table, columns=_columns)
+        schema = {k: ColumnDefinition(data_types=self.convert_dtypes(v)) for k, v in _schema.items()}
+        out_table = self.create_out_table_definition(self.par_table_name, schema=schema,
+                                                     primary_key=self.par_primary_keys)
+        self.write_manifest(out_table)
+
         logging.info(f"Converted {len(self.var_pq_files_names)} Parquet files to csv.")
+
+    def convert_dtypes(self, dtype: pyarrow.DataType) -> BaseType:
+        if types.is_integer(dtype):
+            return BaseType.integer()
+        elif types.is_floating(dtype):
+            return BaseType.float()
+        elif types.is_boolean(dtype):
+            return BaseType.boolean()
+        elif types.is_date(dtype):
+            return BaseType.date()
+        elif types.is_timestamp(dtype):
+            return BaseType.timestamp()
+        elif types.is_decimal(dtype):
+            return BaseType.numeric()
+        else:
+            return BaseType.string()
 
     def createManifest(self, table_path, columns):
 
@@ -213,13 +219,11 @@ class ParquetParser(ComponentBase):
                     schema = _pq_file_schema
 
                     if schema.names == [] and self.par_table_columns is not None:
-                        logging.error("Schema is empty. Make sure parameter \"columns\" specifies correct columns " +
-                                      "present in schema.")
-                        sys.exit(1)
+                        raise UserException("Schema is empty. Make sure parameter \"columns\" specifies" +
+                                            "correct columns present in schema.")
 
                     elif schema.names == []:
-                        logging.error("Schema is empty.")
-                        sys.exit(1)
+                        raise UserException("Schema is empty.")
 
                     else:
                         pass
@@ -258,25 +262,21 @@ class ParquetParser(ComponentBase):
 
                 # logging.debug(f"Converted {filename} to csv. Rows: {_pq_file.num_rows}.")
 
-        return columns
+        return dict(zip(schema.names, schema.types))
 
     def _fillProcess(self, table_path):
 
-        schema_columns = []
+        schema = {}
 
         for path in self.var_pq_files_paths:
 
             _pq_file = pq.read_table(path, columns=self.par_table_columns)
-            schema_columns += _pq_file.schema.names
+            schema.update(dict(zip(_pq_file.schema.names, _pq_file.schema.types)))
 
-        # to keep order of columns
-        seen = set()
-        schema_columns = [x for x in schema_columns if not (x in seen or seen.add(x))]
-
-        logging.debug(schema_columns)
+        logging.debug(schema.keys())
 
         if self.par_include_filename is True:
-            schema_columns += [FILENAME_COLUMN]
+            schema.update({FILENAME_COLUMN: string()})
 
         with open(table_path, 'w') as out_results:
 
@@ -290,7 +290,7 @@ class ParquetParser(ComponentBase):
 
                     _df_batch = pd.DataFrame(_pq_batch.to_pydict(), dtype=str)
 
-                    for _c in schema_columns:
+                    for _c in schema:
 
                         if _c not in _df_batch.columns:
                             if _c == FILENAME_COLUMN:
@@ -299,17 +299,16 @@ class ParquetParser(ComponentBase):
                             else:
                                 _df_batch[_c] = ''
 
-                    _df_batch[schema_columns].to_csv(out_results, header=False, index=False, na_rep='')
+                    _df_batch[schema.keys()].to_csv(out_results, header=False, index=False, na_rep='')
 
                 logging.debug(f"Converted {filename} to csv. Rows: {_pq_file.num_rows}.")
 
-        return schema_columns
+        return schema
 
     def _strictProces(self, table_path):
 
         if self.par_table_columns is None:
-            logging.error("Parameter \"columns\" must be specified for strict mode.")
-            sys.exit(1)
+            raise UserException("Parameter \"columns\" must be specified for strict mode.")
 
         columns = self.par_table_columns
         if self.par_include_filename is True:
@@ -323,10 +322,9 @@ class ParquetParser(ComponentBase):
 
                 missing_columns = list(set(columns) - set(_pq_file.schema.names) - set([FILENAME_COLUMN]))
                 if missing_columns != []:
-                    logging.error(f"Missing columns {missing_columns} in file {filename}, which were defined " +
-                                  "in configuration parameter \"columns\".\n" +
-                                  f"Available columns are {_pq_file.schema.names}.")
-                    sys.exit(1)
+                    raise UserException(f"Missing columns {missing_columns} in file {filename}, which were defined " +
+                                        "in configuration parameter \"columns\".\n" +
+                                        f"Available columns are {_pq_file.schema.names}.")
 
                 _pq_batches = _pq_file.to_batches(max_chunksize=self.par_chunk_size)
 
@@ -340,13 +338,28 @@ class ParquetParser(ComponentBase):
 
                 logging.debug(f"Converted {filename} to csv. Rows: {_pq_file.num_rows}.")
 
-        return columns
+                schema = dict(zip(_pq_file.schema.names, _pq_file.schema.types))
+
+                filtered_schema = {k: v for k, v in schema.items() if k in columns}
+
+        return filtered_schema
 
     def run(self):
         self.getParquetFiles()
         self.processParquet()
 
 
-if __name__ == '__main__':
-    p = ParquetParser()
-    p.run()
+"""
+        Main entrypoint
+"""
+if __name__ == "__main__":
+    try:
+        comp = Component()
+        # this triggers the run method by default and is controlled by the configuration.action parameter
+        comp.execute_action()
+    except UserException as exc:
+        logging.exception(exc)
+        exit(1)
+    except Exception as exc:
+        logging.exception(exc)
+        exit(2)
