@@ -1,0 +1,14 @@
+{
+  "parameters": {
+    "mode": "fill",
+    "table_name": "table.csv",
+    "incremental": true,
+    "primary_keys": [
+      "TIMESTAMP"
+    ],
+    "include_filename": true,
+    "debug": true,
+    "columns": []
+  },
+  "image_parameters": {}
+}
