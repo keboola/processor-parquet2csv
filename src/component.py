@@ -144,20 +144,20 @@ class Component(ComponentBase):
         logging.info(f"Converted {len(self.var_pq_files_names)} Parquet files to csv.")
 
     def convert_dtypes(self, dtype: pyarrow.DataType) -> BaseType:
-        if types.is_integer(dtype):
-            return BaseType.integer()
-        elif types.is_floating(dtype):
-            return BaseType.float()
-        elif types.is_boolean(dtype):
-            return BaseType.boolean()
-        elif types.is_date(dtype):
-            return BaseType.date()
-        elif types.is_timestamp(dtype):
-            return BaseType.timestamp()
-        elif types.is_decimal(dtype):
-            return BaseType.numeric()
-        else:
-            return BaseType.string()
+        type_mapping = {
+            types.is_integer: BaseType.integer,
+            types.is_floating: BaseType.float,
+            types.is_boolean: BaseType.boolean,
+            types.is_date: BaseType.date,
+            types.is_timestamp: BaseType.timestamp,
+            types.is_decimal: BaseType.numeric,
+        }
+
+        for type_check, base_type in type_mapping.items():
+            if type_check(dtype):
+                return base_type()
+
+        return BaseType.string()
 
     def createManifest(self, table_path, columns):
 
