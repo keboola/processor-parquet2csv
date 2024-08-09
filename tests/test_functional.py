@@ -9,6 +9,8 @@ class TestComponent(unittest.TestCase):
 
     def test_functional(self):
         logging.info('Running functional tests')
+        os.environ['KBC_STACKID'] = 'connection.keboola.com'
+        os.environ['KBC_PROJECT_FEATURE_GATES'] = 'queuev2'
         functional_tests = DataDirTester()
         functional_tests.run()
 
