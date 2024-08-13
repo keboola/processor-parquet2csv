@@ -1,4 +1,4 @@
-keboola.component==1.6.7
+keboola.component==1.6.8
 python-snappy==0.7.2
 fastparquet==2024.5.0
 pyarrow==17.0.0
