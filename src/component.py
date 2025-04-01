@@ -3,33 +3,33 @@ import json
 import logging
 import os
 
-import pyarrow
-from pyarrow import parquet as pq, types, string
-import pandas as pd
 from keboola.component import ComponentBase, UserException
 from keboola.component.dao import BaseType, ColumnDefinition
+from duckdb import connect, DuckDBPyConnection
 
-KEY_MODE = 'mode'
-KEY_TABLE_COLUMNS = 'columns'
-KEY_TABLE_NAME = 'table_name'
-KEY_INCREMENTAL = 'incremental'
-KEY_PRIMARY_KEYS = 'primary_keys'
-KEY_FILENAME = 'include_filename'
-KEY_CHUNKSIZE = 'chunk_size'
-KEY_DEBUG = 'debug'
-KEY_EXTENSION_MASK = 'file_mask'
+KEY_MODE = "mode"
+KEY_TABLE_COLUMNS = "columns"
+KEY_TABLE_NAME = "table_name"
+KEY_INCREMENTAL = "incremental"
+KEY_PRIMARY_KEYS = "primary_keys"
+KEY_FILENAME = "include_filename"
+KEY_CHUNKSIZE = "chunk_size"
+KEY_DEBUG = "debug"
+KEY_EXTENSION_MASK = "file_mask"
 
 MANDATORY_PARAMETERS = [KEY_MODE, KEY_TABLE_NAME]
-SUPPORTED_MODES = ["fast", "fill", "strict"]  # , "pandas"]
-FILENAME_COLUMN = 'parquet_filename'
+SUPPORTED_MODES = ["fast", "fill", "strict"]
+FILENAME_COLUMN = "parquet_filename"
 
 DEFAULT_CHUNK_SIZE = 10000
 
+DUCK_DB_DIR = os.path.join(os.environ.get("TMPDIR", "/tmp"), "duckdb")
+DUCK_DB_MAX_MEMORY = "128MB"
+
 
 class Component(ComponentBase):
-
     def __init__(self):
-        ComponentBase.__init__(self)
+        super().__init__()
         self.cfg_params = self.configuration.parameters
 
         try:
@@ -46,43 +46,50 @@ class Component(ComponentBase):
         self.par_include_filename = bool(self.cfg_params.get(KEY_FILENAME, False))
         self.par_chunk_size = self.cfg_params.get(KEY_CHUNKSIZE, None)
         self.par_debug = self.cfg_params.get(KEY_DEBUG, False)
-        self.par_extension_mask = self.cfg_params.get(KEY_EXTENSION_MASK, '*.parquet')
+        self.par_extension_mask = self.cfg_params.get(KEY_EXTENSION_MASK, "*.parquet")
+        self.duck = self.init_duckdb()
 
         if self.par_debug is True:
-            logging.getLogger().setLevel('DEBUG')
+            logging.getLogger().setLevel("DEBUG")
         else:
             pass
 
         self.validateParameters()
 
+    @staticmethod
+    def init_duckdb() -> DuckDBPyConnection:
+        os.makedirs(DUCK_DB_DIR, exist_ok=True)
+        config = dict(
+            temp_directory=DUCK_DB_DIR, threads="1", max_memory=DUCK_DB_MAX_MEMORY
+        )
+        return connect(config=config)
+
     def validateParameters(self):
-
-        # mode validation
         if self.par_mode not in SUPPORTED_MODES:
-            raise UserException(f"Unsupported mode {self.par_mode}. Supported modes are: {SUPPORTED_MODES}.")
+            raise UserException(
+                f"Unsupported mode {self.par_mode}. Supported modes are: {SUPPORTED_MODES}."
+            )
 
-        # table name validation
         if not isinstance(self.par_table_name, str):
-            raise UserException("Parameter \"table_name\" must be of type string.")
+            raise UserException('Parameter "table_name" must be of type string.')
 
-        elif self.par_table_name.strip() == '':
+        elif self.par_table_name.strip() == "":
             raise UserException("No table name provided.")
 
-        elif self.par_table_name.endswith('.csv') is False:
-            self.par_table_name = self.par_table_name + '.csv'
+        elif self.par_table_name.endswith(".csv") is False:
+            self.par_table_name = self.par_table_name + ".csv"
 
         else:
             pass
 
-        # table columns validation
         if not isinstance(self.par_table_columns, list):
-            raise UserException("Parameter \"columns\" must be of type list.")
+            raise UserException('Parameter "columns" must be of type list.')
 
         elif len(self.par_table_columns) == 0:
             self.par_table_columns = None
 
         if not isinstance(self.par_primary_keys, list):
-            raise UserException("Parameter \"primary_keys\" must be of type list.")
+            raise UserException('Parameter "primary_keys" must be of type list.')
 
         if self.par_chunk_size is None:
             self.par_chunk_size = DEFAULT_CHUNK_SIZE
@@ -92,257 +99,319 @@ class Component(ComponentBase):
                 _cs = int(self.par_chunk_size)
 
             except ValueError:
-                raise UserException("Parameter \"chunk_size\" must be either an integer or \"null\".")
+                raise UserException(
+                    'Parameter "chunk_size" must be either an integer or "null".'
+                )
 
             self.par_chunk_size = _cs if _cs > 0 else DEFAULT_CHUNK_SIZE
 
     def getParquetFiles(self):
-
-        all_parquet_files = glob.glob(os.path.join(self.files_in_path, '**', self.par_extension_mask), recursive=True)
-        # to ensure consistent order on all platforms
+        all_parquet_files = glob.glob(
+            os.path.join(self.files_in_path, "**", self.par_extension_mask),
+            recursive=True,
+        )
         all_parquet_files.sort()
 
         if len(all_parquet_files) == 0:
             raise UserException("No parquet files found.")
 
         else:
-            nonempty_parquet_files = [path for path in all_parquet_files if os.path.getsize(path) > 0]
-            empty_parquet_files = [path for path in all_parquet_files if os.path.getsize(path) == 0]
+            nonempty_parquet_files = [
+                path for path in all_parquet_files if os.path.getsize(path) > 0
+            ]
+            empty_parquet_files = [
+                path for path in all_parquet_files if os.path.getsize(path) == 0
+            ]
 
             logging.info(f"Skipping {len(empty_parquet_files)} empty files.")
-            # logging.debug(f"Paths of empty files: {[x.replace(self.files_in_path, '') for x in empty_parquet_files]}.") # noqa
 
             self.var_pq_files_paths = nonempty_parquet_files
-            self.var_pq_files_names = [x.replace(self.files_in_path, '') for x in nonempty_parquet_files]
+            self.var_pq_files_names = [
+                x.replace(self.files_in_path, "") for x in nonempty_parquet_files
+            ]
 
-            logging.debug(f"Processing {len(self.var_pq_files_names)} files. Names:\n{self.var_pq_files_names}.")
+            logging.debug(
+                f"Processing {len(self.var_pq_files_names)} files. Names:\n{self.var_pq_files_names}."
+            )
 
     def processParquet(self):
+        out_dir = os.path.join(self.tables_out_path)
 
-        path_table = os.path.join(self.tables_out_path, self.par_table_name)
+        if self.par_mode == "fast":
+            _schema = self._fastProcess(out_dir)
 
-        if self.par_mode == 'fast':
-            _schema = self._fastProcess(path_table)
+        elif self.par_mode == "fill":
+            _schema = self._fillProcess(out_dir)
 
-        elif self.par_mode == 'fill':
-            _schema = self._fillProcess(path_table)
-
-        elif self.par_mode == 'strict':
-            _schema = self._strictProces(path_table)
-
-        # elif self.par_mode == 'pandas':
-        #     self._pandasProcess(path_table)
+        elif self.par_mode == "strict":
+            _schema = self._strictProcess(out_dir)
 
         else:
             raise UserException(f"Unsupported mode {self.par_mode}.")
 
-        schema = {k: ColumnDefinition(data_types=self.convert_dtypes(v)) for k, v in _schema.items()}
-        out_table = self.create_out_table_definition(self.par_table_name, schema=schema,
-                                                     primary_key=self.par_primary_keys)
-        self.write_manifest(out_table)
+        schema = {
+            k: ColumnDefinition(data_types=self.convert_dtypes(v))
+            for k, v in _schema.items()
+        }
+
+        for filename in self.var_pq_files_names:
+            csv_filename = os.path.splitext(os.path.basename(filename))[0] + ".csv"
+            out_table = self.create_out_table_definition(
+                csv_filename, schema=schema, primary_key=self.par_primary_keys
+            )
+            self.write_manifest(out_table)
 
         logging.info(f"Converted {len(self.var_pq_files_names)} Parquet files to csv.")
 
-    def convert_dtypes(self, dtype: pyarrow.DataType) -> BaseType:
-        type_mapping = {
-            types.is_integer: BaseType.integer,
-            types.is_floating: BaseType.float,
-            types.is_boolean: BaseType.boolean,
-            types.is_date: BaseType.date,
-            types.is_timestamp: BaseType.timestamp,
-            types.is_decimal: BaseType.numeric,
-        }
+    def convert_dtypes(self, dtype) -> BaseType:
+        """Convert DuckDB types to Keboola base types"""
+        dtype = str(dtype).upper()
 
-        for type_check, base_type in type_mapping.items():
-            if type_check(dtype):
-                return base_type()
-
-        return BaseType.string()
+        if (
+            dtype == "NUMBER"
+            or dtype == "INTEGER"
+            or dtype == "BIGINT"
+            or dtype == "SMALLINT"
+        ):
+            return BaseType.integer()
+        elif dtype == "DOUBLE" or dtype == "FLOAT" or dtype == "REAL":
+            return BaseType.float()
+        elif dtype == "DATE":
+            return BaseType.date()
+        elif dtype == "BOOL" or dtype == "BOOLEAN":
+            return BaseType.boolean()
+        elif dtype == "DATETIME" or dtype == "TIMESTAMP":
+            return BaseType.timestamp()
+        elif dtype == "DECIMAL":
+            return BaseType.numeric()
+        else:
+            return BaseType.string()
 
     def createManifest(self, table_path, columns):
-
-        with open(table_path + '.manifest', 'w') as _man_file:
-
+        with open(table_path + ".manifest", "w") as _man_file:
             json.dump(
                 {
-                    'columns': columns,
-                    'incremental': self.par_incremental,
-                    'primary_key': self.par_primary_keys
+                    "columns": columns,
+                    "incremental": self.par_incremental,
+                    "primary_key": self.par_primary_keys,
                 },
-                _man_file
+                _man_file,
             )
 
-    # def _pandasProcess(self, table_path):
+    def _get_coalesce_expr(self, col, col_type, filename):
+        """Helper method to generate COALESCE expression based on column type"""
+        if col == FILENAME_COLUMN:
+            return f"'{filename}' AS {FILENAME_COLUMN}"
 
-    #     with open(table_path, 'w') as out_results:
+        logging.debug(f"Column {col} has type: {col_type}")
+        col_type = str(col_type).upper()
 
-    #         for path, filename in zip(self.var_pq_files_paths, self.var_pq_files_names):
+        if col_type == "INTEGER" or col_type == "BIGINT" or col_type == "SMALLINT":
+            return f"COALESCE(CAST({col} AS INTEGER), 0) AS {col}"
+        elif col_type == "DOUBLE" or col_type == "FLOAT" or col_type == "REAL":
+            return f"COALESCE(CAST({col} AS DOUBLE), 0.0) AS {col}"
+        elif col_type == "BOOLEAN":
+            return f"COALESCE(CAST({col} AS BOOLEAN), false) AS {col}"
+        elif col_type == "DATE":
+            return f"COALESCE({col}, NULL) AS {col}"
+        elif col_type == "TIMESTAMP":
+            return f"COALESCE({col}, NULL) AS {col}"
+        else:
+            return f"COALESCE(CAST({col} AS VARCHAR), '') AS {col}"
 
-    #             logging.info(f"Converting file {path} to csv.")
-    #             _df = pd.read_parquet(path, memory_map=False)
-    #             _df.to_csv(out_results, index=False, header=False)
+    def _processFastBatch(self, pq_path, out_dir, columns, filename):
+        try:
+            csv_filename = os.path.splitext(os.path.basename(filename))[0] + ".csv"
+            out_table = os.path.join(out_dir, csv_filename)
 
-    def _processFastBatch(self, pq_path, out_table, columns, filename):
+            view_name = f"temp_view_{abs(hash(pq_path))}"
+            self.duck.execute(f"""
+                CREATE VIEW OR REPLACE {view_name} AS
+                SELECT * FROM parquet_scan('{pq_path}')
+            """)
 
-        _pq_file = pq.read_table(pq_path, columns=self.par_table_columns)
-        _pq_batches = _pq_file.to_batches(max_chunksize=self.par_chunk_size)
+            if FILENAME_COLUMN in columns:
+                self.duck.execute(f"""
+                    CREATE OR REPLACE VIEW {view_name}_with_filename AS
+                    SELECT *, '{filename}' AS {FILENAME_COLUMN} FROM {view_name}
+                """)
+                view_name = f"{view_name}_with_filename"
 
-        for _pq_batch in _pq_batches:
-            _df_batch = pd.DataFrame(_pq_batch.to_pydict(), dtype=str)
+            schema_info = self.duck.execute(f"DESCRIBE {view_name}").fetchall()
+            schema = {col[0]: col[1] for col in schema_info}
 
-            for _c in columns:
+            select_cols = [
+                self._get_coalesce_expr(col, schema.get(col, ""), filename)
+                for col in columns
+            ]
 
-                if _c not in _df_batch.columns:
-                    if _c == FILENAME_COLUMN:
-                        _df_batch[_c] = filename
+            self.duck.execute(f"""
+                COPY (
+                    SELECT {", ".join(select_cols)}
+                    FROM {view_name}
+                ) TO '{out_table}'
+                (HEADER FALSE, DELIMITER ',', QUOTE '"', FORCE_QUOTE *)
+            """)
 
-                    else:
-                        _df_batch[_c] = ''
+            row_count = self.duck.execute(
+                f"SELECT COUNT(*) FROM {view_name}"
+            ).fetchone()[0]
+            logging.debug(f"Converted {pq_path} to csv. Rows: {row_count}.")
 
-            _df_batch[columns].to_csv(out_table, header=False, index=False, na_rep='')
+        except Exception as e:
+            logging.error(f"Error processing {pq_path}: {e}")
+            raise
 
-        logging.debug(f"Converted {pq_path} to csv. Rows: {_pq_file.num_rows}.")
+        finally:
+            self.duck.execute(f"DROP VIEW IF EXISTS {view_name}_with_filename")
+            self.duck.execute(f"DROP VIEW IF EXISTS {view_name}")
 
-    def _fastProcess(self, table_path):
-
+    def _fastProcess(self, out_dir):
         schema = None
         columns = None
 
-        with open(table_path, 'w') as out_results:
+        os.makedirs(out_dir, exist_ok=True)
 
-            for path, filename in zip(self.var_pq_files_paths, self.var_pq_files_names):
-                logging.info(f"Converting file {path} to csv.")
+        for path, filename in zip(self.var_pq_files_paths, self.var_pq_files_names):
+            logging.info(f"Converting file {path} to csv.")
 
-                _pq_file_schema = pq.read_schema(path)
+            if schema is None:
+                schema_info = self.duck.execute(
+                    f"SELECT * FROM parquet_scan('{path}') LIMIT 0"
+                ).description
 
-                if schema is None:
-                    schema = _pq_file_schema
+                schema = {col[0]: col[1] for col in schema_info}
 
-                    if schema.names == [] and self.par_table_columns is not None:
-                        raise UserException("Schema is empty. Make sure parameter \"columns\" specifies" +
-                                            "correct columns present in schema.")
+                if not schema:
+                    raise UserException("Schema is empty.")
 
-                    elif schema.names == []:
-                        raise UserException("Schema is empty.")
+                logging.debug(f"Using following schema to parse the files: \n{schema}")
 
-                    else:
-                        pass
-
-                    logging.debug(f"Using following schema to parse the files:\n{schema}.")
-
-                    if self.par_table_columns is None:
-                        columns = schema.names
-                    else:
-                        columns = self.par_table_columns
-
-                    if self.par_include_filename is True:
-                        columns += [FILENAME_COLUMN]
-
+                if self.par_table_columns is None:
+                    columns = list(schema.keys())
                 else:
-                    pass
+                    columns = self.par_table_columns
 
-                self._processFastBatch(path, out_results, columns, filename)
+                if self.par_include_filename:
+                    columns += [FILENAME_COLUMN]
 
-                # _pq_file = pq.read_table(path, columns=self.par_table_columns)
-                # _pq_batches = _pq_file.to_batches(max_chunksize=self.par_chunk_size)
-
-                # for _pq_batch in _pq_batches:
-                #     _df_batch = pd.DataFrame(_pq_batch.to_pydict(), dtype=str)
-
-                #     for _c in columns:
-
-                #         if _c not in _df_batch.columns:
-                #             if _c == FILENAME_COLUMN:
-                #                 _df_batch[_c] = filename
-
-                #             else:
-                #                 _df_batch[_c] = ''
-
-                #     _df_batch[columns].to_csv(out_results, header=False, index=False, na_rep='')
-
-                # logging.debug(f"Converted {filename} to csv. Rows: {_pq_file.num_rows}.")
-
-        return dict(zip(schema.names, schema.types))
-
-    def _fillProcess(self, table_path):
-
-        schema = {}
-
-        for path in self.var_pq_files_paths:
-
-            _pq_file = pq.read_table(path, columns=self.par_table_columns)
-            schema.update(dict(zip(_pq_file.schema.names, _pq_file.schema.types)))
-
-        logging.debug(schema.keys())
-
-        if self.par_include_filename is True:
-            schema.update({FILENAME_COLUMN: string()})
-
-        with open(table_path, 'w') as out_results:
-
-            for path, filename in zip(self.var_pq_files_paths, self.var_pq_files_names):
-
-                _pq_file = pq.read_table(path)
-
-                _pq_batches = _pq_file.to_batches(max_chunksize=self.par_chunk_size)
-
-                for _pq_batch in _pq_batches:
-
-                    _df_batch = pd.DataFrame(_pq_batch.to_pydict(), dtype=str)
-
-                    for _c in schema:
-
-                        if _c not in _df_batch.columns:
-                            if _c == FILENAME_COLUMN:
-                                _df_batch[_c] = filename
-
-                            else:
-                                _df_batch[_c] = ''
-
-                    _df_batch[schema.keys()].to_csv(out_results, header=False, index=False, na_rep='')
-
-                logging.debug(f"Converted {filename} to csv. Rows: {_pq_file.num_rows}.")
+            self._processFastBatch(path, out_dir, columns, filename)
 
         return schema
 
-    def _strictProces(self, table_path):
+    def _fillProcess(self, out_dir):
+        schema = {}
 
+        for path in self.var_pq_files_paths:
+            schema_info = self.duck.execute(
+                f"SELECT * FROM parquet_scan('{path}') LIMIT 0"
+            ).description
+            schema.update({col[0]: col[1] for col in schema_info})
+
+        logging.debug(schema.keys())
+
+        if self.par_include_filename:
+            schema[FILENAME_COLUMN] = "VARCHAR"
+
+        columns = list(schema.keys())
+
+        os.makedirs(out_dir, exist_ok=True)
+
+        for path, filename in zip(self.var_pq_files_paths, self.var_pq_files_names):
+            csv_filename = os.path.splitext(os.path.basename(filename))[0] + ".csv"
+            table_path = os.path.join(out_dir, csv_filename)
+
+            view_name = f"temp_view_{abs(hash(path))}"
+
+            try:
+                self.duck.execute(f"""
+                    CREATE OR REPLACE VIEW {view_name} AS
+                    SELECT * FROM parquet_scan('{path}')
+                """)
+
+                select_cols = [
+                    self._get_coalesce_expr(col, schema[col], filename)
+                    for col in columns
+                ]
+
+                self.duck.execute(f"""
+                    COPY (
+                        SELECT {", ".join(select_cols)}
+                        FROM {view_name}
+                    ) TO '{table_path}'
+                    (HEADER FALSE, DELIMITER ',', QUOTE '"', FORCE_QUOTE *)
+                """)
+
+                row_count = self.duck.execute(
+                    f"SELECT COUNT(*) FROM {view_name}"
+                ).fetchone()[0]
+                logging.debug(f"Converted {filename} to csv. Rows: {row_count}.")
+
+            finally:
+                self.duck.execute(f"DROP VIEW IF EXISTS {view_name}")
+
+        return schema
+
+    def _strictProcess(self, out_dir):
         if self.par_table_columns is None:
-            raise UserException("Parameter \"columns\" must be specified for strict mode.")
+            raise UserException(
+                'Parameter "columns" must be specified for strict mode.'
+            )
 
         columns = self.par_table_columns
-        if self.par_include_filename is True:
+        if self.par_include_filename:
             columns += [FILENAME_COLUMN]
 
-        with open(table_path, 'w') as out_results:
+        os.makedirs(out_dir, exist_ok=True)
 
-            for path, filename in zip(self.var_pq_files_paths, self.var_pq_files_names):
+        schema = None
+        for path, filename in zip(self.var_pq_files_paths, self.var_pq_files_names):
+            csv_filename = os.path.splitext(os.path.basename(filename))[0] + ".csv"
+            table_path = os.path.join(out_dir, csv_filename)
 
-                _pq_file = pq.read_table(path)
+            view_name = f"temp_view_{abs(hash(path))}"
 
-                missing_columns = list(set(columns) - set(_pq_file.schema.names) - set([FILENAME_COLUMN]))
-                if missing_columns != []:
-                    raise UserException(f"Missing columns {missing_columns} in file {filename}, which were defined " +
-                                        "in configuration parameter \"columns\".\n" +
-                                        f"Available columns are {_pq_file.schema.names}.")
+            try:
+                schema_info = self.duck.execute(
+                    f"SELECT * FROM parquet_scan('{path}') LIMIT 0"
+                ).description
+                file_columns = [col[0] for col in schema_info]
+                schema = {col[0]: col[1] for col in schema_info}
 
-                _pq_batches = _pq_file.to_batches(max_chunksize=self.par_chunk_size)
+                missing_columns = list(
+                    set(columns) - set(file_columns) - set([FILENAME_COLUMN])
+                )
+                if missing_columns:
+                    raise UserException(
+                        f"Missing columns {missing_columns} in file {filename}, which were defined "
+                        'in configuration parameter "columns".\n'
+                        f"Available columns are {file_columns}."
+                    )
 
-                for _pq_batch in _pq_batches:
+                self.duck.execute(f"""
+                    CREATE OR REPLACE VIEW {view_name} AS
+                    SELECT * FROM parquet_scan('{path}')
+                """)
 
-                    _df_batch = pd.DataFrame(_pq_batch.to_pydict(), dtype=str)
-                    if FILENAME_COLUMN in columns:
-                        _df_batch[FILENAME_COLUMN] = filename
+                select_cols = [
+                    self._get_coalesce_expr(col, schema.get(col, ""), filename)
+                    for col in columns
+                ]
 
-                    _df_batch[columns].to_csv(out_results, header=False, index=False, na_rep='')
+                self.duck.execute(f"""
+                    COPY (
+                        SELECT {", ".join(select_cols)}
+                        FROM {view_name}
+                    ) TO '{table_path}'
+                    (HEADER FALSE, DELIMITER ',', QUOTE '"', FORCE_QUOTE *)
+                """)
 
-                logging.debug(f"Converted {filename} to csv. Rows: {_pq_file.num_rows}.")
+                logging.debug(f"Converted {filename} to csv.")
 
-                schema = dict(zip(_pq_file.schema.names, _pq_file.schema.types))
+            finally:
+                self.duck.execute(f"DROP VIEW IF EXISTS {view_name}")
 
-                filtered_schema = {k: v for k, v in schema.items() if k in columns}
-
-        return filtered_schema
+        return {k: v for k, v in schema.items() if k in columns}
 
     def run(self):
         self.getParquetFiles()
@@ -355,7 +424,6 @@ class Component(ComponentBase):
 if __name__ == "__main__":
     try:
         comp = Component()
-        # this triggers the run method by default and is controlled by the configuration.action parameter
         comp.execute_action()
     except UserException as exc:
         logging.exception(exc)
