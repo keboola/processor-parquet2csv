@@ -135,16 +135,16 @@ class Component(ComponentBase):
             )
 
     def processParquet(self):
-        out_dir = os.path.join(self.tables_out_path)
+        path_table = os.path.join(self.tables_out_path, self.par_table_name)
 
         if self.par_mode == "fast":
-            _schema = self._fastProcess(out_dir)
+            _schema = self._fastProcess(path_table)
 
         elif self.par_mode == "fill":
-            _schema = self._fillProcess(out_dir)
+            _schema = self._fillProcess(path_table)
 
         elif self.par_mode == "strict":
-            _schema = self._strictProcess(out_dir)
+            _schema = self._strictProcess(path_table)
 
         else:
             raise UserException(f"Unsupported mode {self.par_mode}.")
@@ -153,15 +153,10 @@ class Component(ComponentBase):
             k: ColumnDefinition(data_types=self.convert_dtypes(v))
             for k, v in _schema.items()
         }
-
-        for filename in self.var_pq_files_names:
-            csv_filename = os.path.splitext(os.path.basename(filename))[0] + ".csv"
-            out_table = self.create_out_table_definition(
-                csv_filename, schema=schema, primary_key=self.par_primary_keys
-            )
-            self.write_manifest(out_table)
-
-        logging.info(f"Converted {len(self.var_pq_files_names)} Parquet files to csv.")
+        out_table = self.create_out_table_definition(
+            self.par_table_name, schema=schema, primary_key=self.par_primary_keys
+        )
+        self.write_manifest(out_table)
 
     def convert_dtypes(self, dtype) -> BaseType:
         """Convert DuckDB types to Keboola base types"""
@@ -219,11 +214,8 @@ class Component(ComponentBase):
         else:
             return f"COALESCE(CAST({col} AS VARCHAR), '') AS {col}"
 
-    def _processFastBatch(self, pq_path, out_dir, columns, filename):
+    def _processFastBatch(self, pq_path, temp_table, columns, filename):
         try:
-            csv_filename = os.path.splitext(os.path.basename(filename))[0] + ".csv"
-            out_table = os.path.join(out_dir, csv_filename)
-
             view_name = f"temp_view_{abs(hash(pq_path))}"
             self.duck.execute(f"""
                 CREATE VIEW OR REPLACE {view_name} AS
@@ -245,18 +237,23 @@ class Component(ComponentBase):
                 for col in columns
             ]
 
-            self.duck.execute(f"""
-                COPY (
-                    SELECT {", ".join(select_cols)}
-                    FROM {view_name}
-                ) TO '{out_table}'
-                (HEADER FALSE, DELIMITER ',', QUOTE '"', FORCE_QUOTE *)
-            """)
-
             row_count = self.duck.execute(
                 f"SELECT COUNT(*) FROM {view_name}"
             ).fetchone()[0]
-            logging.debug(f"Converted {pq_path} to csv. Rows: {row_count}.")
+            logging.info(f"Processing {filename} with {row_count} rows...")
+
+            self.duck.execute(f"""
+                INSERT INTO {temp_table}
+                SELECT {", ".join(select_cols)}
+                FROM {view_name}
+            """)
+
+            total_rows = self.duck.execute(
+                f"SELECT COUNT(*) FROM {temp_table}"
+            ).fetchone()[0]
+            logging.info(
+                f"Total rows in temporary table after {filename}: {total_rows}"
+            )
 
         except Exception as e:
             logging.error(f"Error processing {pq_path}: {e}")
@@ -266,40 +263,85 @@ class Component(ComponentBase):
             self.duck.execute(f"DROP VIEW IF EXISTS {view_name}_with_filename")
             self.duck.execute(f"DROP VIEW IF EXISTS {view_name}")
 
-    def _fastProcess(self, out_dir):
+    def _create_temp_table(self, table_name, schema, columns):
+        """Helper method to create temporary table with correct schema"""
+        create_columns = []
+        for col in columns:
+            if col == FILENAME_COLUMN:
+                create_columns.append(f"{col} VARCHAR")
+            else:
+                col_type = str(schema[col]).upper()
+                if (
+                    col_type == "NUMBER"
+                    or col_type == "INTEGER"
+                    or col_type == "BIGINT"
+                    or col_type == "SMALLINT"
+                ):
+                    create_columns.append(f"{col} INTEGER")
+                elif col_type == "DOUBLE" or col_type == "FLOAT" or col_type == "REAL":
+                    create_columns.append(f"{col} DOUBLE")
+                elif col_type == "BOOLEAN":
+                    create_columns.append(f"{col} BOOLEAN")
+                elif col_type == "DATE":
+                    create_columns.append(f"{col} DATE")
+                elif col_type == "TIMESTAMP" or col_type == "DATETIME":
+                    create_columns.append(f"{col} TIMESTAMP")
+                else:
+                    create_columns.append(f"{col} VARCHAR")
+
+        self.duck.execute(f"""
+            CREATE TEMP TABLE {table_name} (
+                {", ".join(create_columns)}
+            )
+        """)
+
+    def _fastProcess(self, table_path):
         schema = None
         columns = None
 
-        os.makedirs(out_dir, exist_ok=True)
+        os.makedirs(os.path.dirname(table_path), exist_ok=True)
 
-        for path, filename in zip(self.var_pq_files_paths, self.var_pq_files_names):
-            logging.info(f"Converting file {path} to csv.")
+        first_path = self.var_pq_files_paths[0]
+        schema_info = self.duck.execute(
+            f"SELECT * FROM parquet_scan('{first_path}') LIMIT 0"
+        ).description
+        schema = {col[0]: col[1] for col in schema_info}
 
-            if schema is None:
-                schema_info = self.duck.execute(
-                    f"SELECT * FROM parquet_scan('{path}') LIMIT 0"
-                ).description
+        if not schema:
+            raise UserException("Schema is empty.")
 
-                schema = {col[0]: col[1] for col in schema_info}
+        if self.par_table_columns is None:
+            columns = list(schema.keys())
+        else:
+            columns = self.par_table_columns
 
-                if not schema:
-                    raise UserException("Schema is empty.")
+        if self.par_include_filename:
+            columns += [FILENAME_COLUMN]
 
-                logging.debug(f"Using following schema to parse the files: \n{schema}")
+        temp_table = "temp_combined_data"
+        self._create_temp_table(temp_table, schema, columns)
 
-                if self.par_table_columns is None:
-                    columns = list(schema.keys())
-                else:
-                    columns = self.par_table_columns
+        try:
+            for path, filename in zip(self.var_pq_files_paths, self.var_pq_files_names):
+                logging.info(f"Converting file {path} to csv.")
+                self._processFastBatch(path, temp_table, columns, filename)
 
-                if self.par_include_filename:
-                    columns += [FILENAME_COLUMN]
+            total_rows = self.duck.execute(
+                f"SELECT COUNT(*) FROM {temp_table}"
+            ).fetchone()[0]
+            logging.info(f"Exporting total of {total_rows} rows to CSV")
 
-            self._processFastBatch(path, out_dir, columns, filename)
+            self.duck.execute(f"""
+                COPY {temp_table} TO '{table_path}'
+                (HEADER FALSE, DELIMITER ',', QUOTE '"', FORCE_QUOTE *)
+            """)
+
+        finally:
+            self.duck.execute(f"DROP TABLE IF EXISTS {temp_table}")
 
         return schema
 
-    def _fillProcess(self, out_dir):
+    def _fillProcess(self, table_path):
         schema = {}
 
         for path in self.var_pq_files_paths:
@@ -315,44 +357,56 @@ class Component(ComponentBase):
 
         columns = list(schema.keys())
 
-        os.makedirs(out_dir, exist_ok=True)
+        os.makedirs(os.path.dirname(table_path), exist_ok=True)
 
-        for path, filename in zip(self.var_pq_files_paths, self.var_pq_files_names):
-            csv_filename = os.path.splitext(os.path.basename(filename))[0] + ".csv"
-            table_path = os.path.join(out_dir, csv_filename)
+        temp_table = "temp_combined_data"
+        self._create_temp_table(temp_table, schema, columns)
 
-            view_name = f"temp_view_{abs(hash(path))}"
+        try:
+            for path, filename in zip(self.var_pq_files_paths, self.var_pq_files_names):
+                view_name = f"temp_view_{abs(hash(path))}"
 
-            try:
-                self.duck.execute(f"""
-                    CREATE OR REPLACE VIEW {view_name} AS
-                    SELECT * FROM parquet_scan('{path}')
-                """)
+                try:
+                    self.duck.execute(f"""
+                        CREATE OR REPLACE VIEW {view_name} AS
+                        SELECT * FROM parquet_scan('{path}')
+                    """)
 
-                select_cols = [
-                    self._get_coalesce_expr(col, schema[col], filename)
-                    for col in columns
-                ]
+                    select_cols = [
+                        self._get_coalesce_expr(col, schema[col], filename)
+                        for col in columns
+                    ]
 
-                self.duck.execute(f"""
-                    COPY (
+                    self.duck.execute(f"""
+                        INSERT INTO {temp_table}
                         SELECT {", ".join(select_cols)}
                         FROM {view_name}
-                    ) TO '{table_path}'
-                    (HEADER FALSE, DELIMITER ',', QUOTE '"', FORCE_QUOTE *)
-                """)
+                    """)
 
-                row_count = self.duck.execute(
-                    f"SELECT COUNT(*) FROM {view_name}"
-                ).fetchone()[0]
-                logging.debug(f"Converted {filename} to csv. Rows: {row_count}.")
+                    row_count = self.duck.execute(
+                        f"SELECT COUNT(*) FROM {view_name}"
+                    ).fetchone()[0]
+                    logging.info(f"Added {row_count} rows from {filename}")
 
-            finally:
-                self.duck.execute(f"DROP VIEW IF EXISTS {view_name}")
+                finally:
+                    self.duck.execute(f"DROP VIEW IF EXISTS {view_name}")
+
+            total_rows = self.duck.execute(
+                f"SELECT COUNT(*) FROM {temp_table}"
+            ).fetchone()[0]
+            logging.info(f"Exporting total of {total_rows} rows to CSV")
+
+            self.duck.execute(f"""
+                COPY {temp_table} TO '{table_path}'
+                (HEADER FALSE, DELIMITER ',', QUOTE '"', FORCE_QUOTE *)
+            """)
+
+        finally:
+            self.duck.execute(f"DROP TABLE IF EXISTS {temp_table}")
 
         return schema
 
-    def _strictProcess(self, out_dir):
+    def _strictProcess(self, table_path):
         if self.par_table_columns is None:
             raise UserException(
                 'Parameter "columns" must be specified for strict mode.'
@@ -362,54 +416,73 @@ class Component(ComponentBase):
         if self.par_include_filename:
             columns += [FILENAME_COLUMN]
 
-        os.makedirs(out_dir, exist_ok=True)
+        os.makedirs(os.path.dirname(table_path), exist_ok=True)
 
-        schema = None
-        for path, filename in zip(self.var_pq_files_paths, self.var_pq_files_names):
-            csv_filename = os.path.splitext(os.path.basename(filename))[0] + ".csv"
-            table_path = os.path.join(out_dir, csv_filename)
+        first_path = self.var_pq_files_paths[0]
+        schema_info = self.duck.execute(
+            f"SELECT * FROM parquet_scan('{first_path}') LIMIT 0"
+        ).description
+        schema = {col[0]: col[1] for col in schema_info}
 
-            view_name = f"temp_view_{abs(hash(path))}"
+        temp_table = "temp_combined_data"
+        self._create_temp_table(temp_table, schema, columns)
 
-            try:
-                schema_info = self.duck.execute(
-                    f"SELECT * FROM parquet_scan('{path}') LIMIT 0"
-                ).description
-                file_columns = [col[0] for col in schema_info]
-                schema = {col[0]: col[1] for col in schema_info}
+        try:
+            for path, filename in zip(self.var_pq_files_paths, self.var_pq_files_names):
+                view_name = f"temp_view_{abs(hash(path))}"
 
-                missing_columns = list(
-                    set(columns) - set(file_columns) - set([FILENAME_COLUMN])
-                )
-                if missing_columns:
-                    raise UserException(
-                        f"Missing columns {missing_columns} in file {filename}, which were defined "
-                        'in configuration parameter "columns".\n'
-                        f"Available columns are {file_columns}."
+                try:
+                    schema_info = self.duck.execute(
+                        f"SELECT * FROM parquet_scan('{path}') LIMIT 0"
+                    ).description
+                    file_columns = [col[0] for col in schema_info]
+
+                    missing_columns = list(
+                        set(columns) - set(file_columns) - set([FILENAME_COLUMN])
                     )
+                    if missing_columns:
+                        raise UserException(
+                            f"Missing columns {missing_columns} in file {filename}, which were defined "
+                            'in configuration parameter "columns".\n'
+                            f"Available columns are {file_columns}."
+                        )
 
-                self.duck.execute(f"""
-                    CREATE OR REPLACE VIEW {view_name} AS
-                    SELECT * FROM parquet_scan('{path}')
-                """)
+                    self.duck.execute(f"""
+                        CREATE OR REPLACE VIEW {view_name} AS
+                        SELECT * FROM parquet_scan('{path}')
+                    """)
 
-                select_cols = [
-                    self._get_coalesce_expr(col, schema.get(col, ""), filename)
-                    for col in columns
-                ]
+                    select_cols = [
+                        self._get_coalesce_expr(col, schema.get(col, ""), filename)
+                        for col in columns
+                    ]
 
-                self.duck.execute(f"""
-                    COPY (
+                    self.duck.execute(f"""
+                        INSERT INTO {temp_table}
                         SELECT {", ".join(select_cols)}
                         FROM {view_name}
-                    ) TO '{table_path}'
-                    (HEADER FALSE, DELIMITER ',', QUOTE '"', FORCE_QUOTE *)
-                """)
+                    """)
 
-                logging.debug(f"Converted {filename} to csv.")
+                    row_count = self.duck.execute(
+                        f"SELECT COUNT(*) FROM {view_name}"
+                    ).fetchone()[0]
+                    logging.info(f"Added {row_count} rows from {filename}")
 
-            finally:
-                self.duck.execute(f"DROP VIEW IF EXISTS {view_name}")
+                finally:
+                    self.duck.execute(f"DROP VIEW IF EXISTS {view_name}")
+
+            total_rows = self.duck.execute(
+                f"SELECT COUNT(*) FROM {temp_table}"
+            ).fetchone()[0]
+            logging.info(f"Exporting total of {total_rows} rows to CSV")
+
+            self.duck.execute(f"""
+                COPY {temp_table} TO '{table_path}'
+                (HEADER FALSE, DELIMITER ',', QUOTE '"', FORCE_QUOTE *)
+            """)
+
+        finally:
+            self.duck.execute(f"DROP TABLE IF EXISTS {temp_table}")
 
         return {k: v for k, v in schema.items() if k in columns}
 
