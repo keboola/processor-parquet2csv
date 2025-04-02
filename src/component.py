@@ -218,7 +218,7 @@ class Component(ComponentBase):
         try:
             view_name = f"temp_view_{abs(hash(pq_path))}"
             self.duck.execute(f"""
-                CREATE VIEW OR REPLACE {view_name} AS
+                CREATE OR REPLACE VIEW {view_name} AS
                 SELECT * FROM parquet_scan('{pq_path}')
             """)
 
