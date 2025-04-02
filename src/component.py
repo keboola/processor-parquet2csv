@@ -29,7 +29,9 @@ DUCK_DB_MAX_MEMORY = "128MB"
 
 class Component(ComponentBase):
     def __init__(self):
-        super().__init__()
+        super().__init__(
+            data_path_override=r"C:\Users\alber\DATA\_work\processor-parquet2csv\data"
+        )
         self.cfg_params = self.configuration.parameters
 
         try:
@@ -149,6 +151,7 @@ class Component(ComponentBase):
         else:
             raise UserException(f"Unsupported mode {self.par_mode}.")
 
+        pass
         schema = {
             k: ColumnDefinition(data_types=self.convert_dtypes(v))
             for k, v in _schema.items()
@@ -211,11 +214,11 @@ class Component(ComponentBase):
         if col_type == "INTEGER" or col_type == "BIGINT" or col_type == "SMALLINT":
             return f"COALESCE(CAST({col} AS INTEGER), 0) AS {col}"
         elif col_type == "NUMBER" or col_type == "NUMERIC":
-            return f"COALESCE(ROUND(CAST({col} AS DECIMAL(18,2)), 2), 0.0) AS {col}"
+            return f"COALESCE({col}, 0) AS {col}"
         elif col_type == "DOUBLE" or col_type == "FLOAT" or col_type == "REAL":
-            return f"COALESCE(ROUND(CAST({col} AS DOUBLE), 2), 0.0) AS {col}"
+            return f"COALESCE({col}, 0) AS {col}"
         elif col_type == "BOOLEAN":
-            return f"CASE WHEN COALESCE({col}, false) THEN 'True' ELSE 'False' END AS {col}"
+            return f"COALESCE({col}, false) AS {col}"
         elif col_type == "DATE":
             return f"COALESCE({col}, NULL) AS {col}"
         elif col_type == "TIMESTAMP":
