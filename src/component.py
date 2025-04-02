@@ -169,7 +169,12 @@ class Component(ComponentBase):
             or dtype == "SMALLINT"
         ):
             return BaseType.integer()
-        elif dtype == "DOUBLE" or dtype == "FLOAT" or dtype == "REAL":
+        elif (
+            dtype == "DOUBLE"
+            or dtype == "FLOAT"
+            or dtype == "REAL"
+            or dtype == "NUMERIC"
+        ):
             return BaseType.float()
         elif dtype == "DATE":
             return BaseType.date()
@@ -196,17 +201,21 @@ class Component(ComponentBase):
     def _get_coalesce_expr(self, col, col_type, filename):
         """Helper method to generate COALESCE expression based on column type"""
         if col == FILENAME_COLUMN:
-            return f"'{filename}' AS {FILENAME_COLUMN}"
+            # Replace backslashes with forward slashes in filename
+            safe_filename = filename.replace("\\", "/")
+            return f"'{safe_filename}' AS {FILENAME_COLUMN}"
 
         logging.debug(f"Column {col} has type: {col_type}")
         col_type = str(col_type).upper()
 
         if col_type == "INTEGER" or col_type == "BIGINT" or col_type == "SMALLINT":
             return f"COALESCE(CAST({col} AS INTEGER), 0) AS {col}"
+        elif col_type == "NUMBER" or col_type == "NUMERIC":
+            return f"COALESCE(ROUND(CAST({col} AS DECIMAL(18,2)), 2), 0.0) AS {col}"
         elif col_type == "DOUBLE" or col_type == "FLOAT" or col_type == "REAL":
-            return f"COALESCE(CAST({col} AS DOUBLE), 0.0) AS {col}"
+            return f"COALESCE(ROUND(CAST({col} AS DOUBLE), 2), 0.0) AS {col}"
         elif col_type == "BOOLEAN":
-            return f"COALESCE(CAST({col} AS BOOLEAN), false) AS {col}"
+            return f"CASE WHEN COALESCE({col}, false) THEN 'True' ELSE 'False' END AS {col}"
         elif col_type == "DATE":
             return f"COALESCE({col}, NULL) AS {col}"
         elif col_type == "TIMESTAMP":
@@ -271,9 +280,12 @@ class Component(ComponentBase):
                 create_columns.append(f"{col} VARCHAR")
             else:
                 col_type = str(schema[col]).upper()
-                if (
-                    col_type == "NUMBER"
-                    or col_type == "INTEGER"
+                if col_type == "NUMBER" or col_type == "NUMERIC":
+                    create_columns.append(
+                        f"{col} DECIMAL(18,4)"
+                    )  # Adjust precision as needed
+                elif (
+                    col_type == "INTEGER"
                     or col_type == "BIGINT"
                     or col_type == "SMALLINT"
                 ):
@@ -333,7 +345,7 @@ class Component(ComponentBase):
 
             self.duck.execute(f"""
                 COPY {temp_table} TO '{table_path}'
-                (HEADER FALSE, DELIMITER ',', QUOTE '"', FORCE_QUOTE *)
+                (HEADER FALSE, DELIMITER ',', QUOTE '"')
             """)
 
         finally:
@@ -344,13 +356,13 @@ class Component(ComponentBase):
     def _fillProcess(self, table_path):
         schema = {}
 
+        # First collect all schemas
         for path in self.var_pq_files_paths:
             schema_info = self.duck.execute(
                 f"SELECT * FROM parquet_scan('{path}') LIMIT 0"
             ).description
-            schema.update({col[0]: col[1] for col in schema_info})
-
-        logging.debug(schema.keys())
+            file_schema = {col[0]: col[1] for col in schema_info}
+            schema.update(file_schema)
 
         if self.par_include_filename:
             schema[FILENAME_COLUMN] = "VARCHAR"
@@ -367,19 +379,55 @@ class Component(ComponentBase):
                 view_name = f"temp_view_{abs(hash(path))}"
 
                 try:
+                    # Get the current file's schema
+                    file_schema_info = self.duck.execute(
+                        f"SELECT * FROM parquet_scan('{path}') LIMIT 0"
+                    ).description
+                    file_columns = {col[0] for col in file_schema_info}
+
+                    # Create base view
                     self.duck.execute(f"""
                         CREATE OR REPLACE VIEW {view_name} AS
                         SELECT * FROM parquet_scan('{path}')
                     """)
 
-                    select_cols = [
-                        self._get_coalesce_expr(col, schema[col], filename)
-                        for col in columns
-                    ]
+                    # Create select expressions for each column
+                    select_exprs = []
+                    for col in columns:
+                        if col == FILENAME_COLUMN:
+                            select_exprs.append(
+                                f"'{filename.replace('\\', '/')}' AS {FILENAME_COLUMN}"
+                            )
+                            continue
 
+                        if col in file_columns:
+                            select_exprs.append(
+                                self._get_coalesce_expr(col, schema[col], filename)
+                            )
+                        else:
+                            # Add default value based on type
+                            col_type = str(schema[col]).upper()
+                            if col_type in ("INTEGER", "BIGINT", "SMALLINT"):
+                                select_exprs.append("0 AS " + col)
+                            elif col_type in (
+                                "DOUBLE",
+                                "FLOAT",
+                                "REAL",
+                                "NUMBER",
+                                "NUMERIC",
+                            ):
+                                select_exprs.append("0.0 AS " + col)
+                            elif col_type == "BOOLEAN":
+                                select_exprs.append("'False' AS " + col)
+                            elif col_type in ("DATE", "TIMESTAMP", "DATETIME"):
+                                select_exprs.append("NULL AS " + col)
+                            else:
+                                select_exprs.append("'' AS " + col)
+
+                    # Insert data using the constructed SELECT
                     self.duck.execute(f"""
                         INSERT INTO {temp_table}
-                        SELECT {", ".join(select_cols)}
+                        SELECT {", ".join(select_exprs)}
                         FROM {view_name}
                     """)
 
@@ -398,7 +446,7 @@ class Component(ComponentBase):
 
             self.duck.execute(f"""
                 COPY {temp_table} TO '{table_path}'
-                (HEADER FALSE, DELIMITER ',', QUOTE '"', FORCE_QUOTE *)
+                (HEADER FALSE, DELIMITER ',', QUOTE '"')
             """)
 
         finally:
@@ -478,7 +526,7 @@ class Component(ComponentBase):
 
             self.duck.execute(f"""
                 COPY {temp_table} TO '{table_path}'
-                (HEADER FALSE, DELIMITER ',', QUOTE '"', FORCE_QUOTE *)
+                (HEADER FALSE, DELIMITER ',', QUOTE '"')
             """)
 
         finally:
