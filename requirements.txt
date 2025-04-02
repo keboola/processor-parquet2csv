@@ -1,6 +1,5 @@
 keboola.component==1.6.7
 python-snappy==0.7.2
 fastparquet==2024.5.0
-pyarrow==17.0.0
 duckdb>=0.9.0
-https://bitbucket.org/kds_consulting_team/datadirtest/get/1.8.2.zip#egg=datadirtest
+https://bitbucket.org/kds_consulting_team/datadirtest/get/1.8.6.zip#egg=datadirtest

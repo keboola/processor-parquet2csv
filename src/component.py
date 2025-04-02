@@ -1,5 +1,4 @@
 import glob
-import json
 import logging
 import os
 
@@ -29,9 +28,7 @@ DUCK_DB_MAX_MEMORY = "128MB"
 
 class Component(ComponentBase):
     def __init__(self):
-        super().__init__(
-            data_path_override=r"C:\Users\alber\DATA\_work\processor-parquet2csv\data"
-        )
+        super().__init__()
         self.cfg_params = self.configuration.parameters
 
         try:
@@ -151,7 +148,6 @@ class Component(ComponentBase):
         else:
             raise UserException(f"Unsupported mode {self.par_mode}.")
 
-        pass
         schema = {
             k: ColumnDefinition(data_types=self.convert_dtypes(v))
             for k, v in _schema.items()
@@ -165,41 +161,56 @@ class Component(ComponentBase):
         """Convert DuckDB types to Keboola base types"""
         dtype = str(dtype).upper()
 
-        if (
-            dtype == "NUMBER"
-            or dtype == "INTEGER"
-            or dtype == "BIGINT"
-            or dtype == "SMALLINT"
-        ):
+        # Handle DuckDB's NUMBER type which can be either INTEGER or FLOAT
+        if dtype == "NUMBER":
+            return BaseType.float()  # Change to INTEGER for NUMBER type
+
+        # Handle integer types
+        if dtype in [
+            "TINYINT",
+            "SMALLINT",
+            "INTEGER",
+            "BIGINT",
+            "HUGEINT",
+            "UTINYINT",
+            "USMALLINT",
+            "UINTEGER",
+            "UBIGINT",
+            "UHUGEINT",
+        ]:
             return BaseType.integer()
-        elif (
-            dtype == "DOUBLE"
-            or dtype == "FLOAT"
-            or dtype == "REAL"
-            or dtype == "NUMERIC"
-        ):
-            return BaseType.float()
-        elif dtype == "DATE":
-            return BaseType.date()
-        elif dtype == "BOOL" or dtype == "BOOLEAN":
-            return BaseType.boolean()
-        elif dtype == "DATETIME" or dtype == "TIMESTAMP":
-            return BaseType.timestamp()
-        elif dtype == "DECIMAL":
+
+        # Handle decimal types
+        if dtype in ["REAL", "DECIMAL"]:
             return BaseType.numeric()
-        else:
+
+        # Handle floating point types
+        if dtype == "DOUBLE":
+            return BaseType.float()
+
+        # Handle boolean types
+        if dtype in ["BOOLEAN", "BOOL"]:
+            return BaseType.boolean()
+
+        # Handle timestamp types
+        if dtype in [
+            "TIMESTAMP",
+            "TIMESTAMP_NS",
+            "TIMESTAMP WITH TIME ZONE",
+            "DATETIME",
+        ]:
+            return BaseType.timestamp()
+
+        # Handle date types
+        if dtype == "DATE":
+            return BaseType.date()
+
+        # Handle string types
+        if dtype in ["VARCHAR", "STRING", "CHAR", "TEXT"]:
             return BaseType.string()
 
-    def createManifest(self, table_path, columns):
-        with open(table_path + ".manifest", "w") as _man_file:
-            json.dump(
-                {
-                    "columns": columns,
-                    "incremental": self.par_incremental,
-                    "primary_key": self.par_primary_keys,
-                },
-                _man_file,
-            )
+        # Default to string for unknown types
+        return BaseType.string()
 
     def _get_coalesce_expr(self, col, col_type, filename):
         """Helper method to generate COALESCE expression based on column type"""
@@ -211,20 +222,56 @@ class Component(ComponentBase):
         logging.debug(f"Column {col} has type: {col_type}")
         col_type = str(col_type).upper()
 
-        if col_type == "INTEGER" or col_type == "BIGINT" or col_type == "SMALLINT":
+        # Handle DuckDB's NUMBER type which can be either INTEGER or FLOAT
+        if col_type == "NUMBER":
+            return f"COALESCE(CAST({col} AS DOUBLE), 0) AS {col}"
+
+        # Handle integer types
+        if col_type in [
+            "TINYINT",
+            "SMALLINT",
+            "INTEGER",
+            "BIGINT",
+            "HUGEINT",
+            "UTINYINT",
+            "USMALLINT",
+            "UINTEGER",
+            "UBIGINT",
+            "UHUGEINT",
+        ]:
             return f"COALESCE(CAST({col} AS INTEGER), 0) AS {col}"
-        elif col_type == "NUMBER" or col_type == "NUMERIC":
-            return f"COALESCE({col}, 0) AS {col}"
-        elif col_type == "DOUBLE" or col_type == "FLOAT" or col_type == "REAL":
-            return f"COALESCE({col}, 0) AS {col}"
-        elif col_type == "BOOLEAN":
-            return f"COALESCE({col}, false) AS {col}"
-        elif col_type == "DATE":
-            return f"COALESCE({col}, NULL) AS {col}"
-        elif col_type == "TIMESTAMP":
-            return f"COALESCE({col}, NULL) AS {col}"
-        else:
+
+        # Handle decimal types
+        if col_type in ["REAL", "DECIMAL"]:
+            return f"COALESCE(CAST({col} AS DECIMAL), 0) AS {col}"
+
+        # Handle floating point types
+        if col_type == "DOUBLE":
+            return f"COALESCE(CAST({col} AS DOUBLE), 0) AS {col}"
+
+        # Handle boolean types
+        if col_type in ["BOOLEAN", "BOOL"]:
+            return f"COALESCE(CAST({col} AS BOOLEAN), false) AS {col}"
+
+        # Handle timestamp types
+        if col_type in [
+            "TIMESTAMP",
+            "TIMESTAMP_NS",
+            "TIMESTAMP WITH TIME ZONE",
+            "DATETIME",
+        ]:
+            return f"COALESCE(CAST({col} AS TIMESTAMP), NULL) AS {col}"
+
+        # Handle date types
+        if col_type == "DATE":
+            return f"COALESCE(CAST({col} AS DATE), NULL) AS {col}"
+
+        # Handle string types
+        if col_type in ["VARCHAR", "STRING", "CHAR", "TEXT"]:
             return f"COALESCE(CAST({col} AS VARCHAR), '') AS {col}"
+
+        # Default to string for unknown types
+        return f"COALESCE(CAST({col} AS VARCHAR), '') AS {col}"
 
     def _processFastBatch(self, pq_path, temp_table, columns, filename):
         try:
@@ -241,6 +288,7 @@ class Component(ComponentBase):
                 """)
                 view_name = f"{view_name}_with_filename"
 
+            # Get schema using DESCRIBE
             schema_info = self.duck.execute(f"DESCRIBE {view_name}").fetchall()
             schema = {col[0]: col[1] for col in schema_info}
 
@@ -317,10 +365,19 @@ class Component(ComponentBase):
         os.makedirs(os.path.dirname(table_path), exist_ok=True)
 
         first_path = self.var_pq_files_paths[0]
-        schema_info = self.duck.execute(
-            f"SELECT * FROM parquet_scan('{first_path}') LIMIT 0"
-        ).description
+        # Create a temporary view to get schema using DESCRIBE
+        view_name = f"temp_view_{abs(hash(first_path))}"
+        self.duck.execute(f"""
+            CREATE OR REPLACE VIEW {view_name} AS
+            SELECT * FROM parquet_scan('{first_path}')
+        """)
+
+        # Get schema using DESCRIBE
+        schema_info = self.duck.execute(f"DESCRIBE {view_name}").fetchall()
         schema = {col[0]: col[1] for col in schema_info}
+
+        # Clean up the temporary view
+        self.duck.execute(f"DROP VIEW IF EXISTS {view_name}")
 
         if not schema:
             raise UserException("Schema is empty.")
@@ -361,11 +418,20 @@ class Component(ComponentBase):
 
         # First collect all schemas
         for path in self.var_pq_files_paths:
-            schema_info = self.duck.execute(
-                f"SELECT * FROM parquet_scan('{path}') LIMIT 0"
-            ).description
+            # Create a temporary view to get schema using DESCRIBE
+            view_name = f"temp_view_{abs(hash(path))}"
+            self.duck.execute(f"""
+                CREATE OR REPLACE VIEW {view_name} AS
+                SELECT * FROM parquet_scan('{path}')
+            """)
+
+            # Get schema using DESCRIBE
+            schema_info = self.duck.execute(f"DESCRIBE {view_name}").fetchall()
             file_schema = {col[0]: col[1] for col in schema_info}
             schema.update(file_schema)
+
+            # Clean up the temporary view
+            self.duck.execute(f"DROP VIEW IF EXISTS {view_name}")
 
         if self.par_include_filename:
             schema[FILENAME_COLUMN] = "VARCHAR"
@@ -382,17 +448,17 @@ class Component(ComponentBase):
                 view_name = f"temp_view_{abs(hash(path))}"
 
                 try:
-                    # Get the current file's schema
-                    file_schema_info = self.duck.execute(
-                        f"SELECT * FROM parquet_scan('{path}') LIMIT 0"
-                    ).description
-                    file_columns = {col[0] for col in file_schema_info}
-
-                    # Create base view
+                    # Create a temporary view to get schema using DESCRIBE
                     self.duck.execute(f"""
                         CREATE OR REPLACE VIEW {view_name} AS
                         SELECT * FROM parquet_scan('{path}')
                     """)
+
+                    # Get the current file's schema
+                    file_schema_info = self.duck.execute(
+                        f"DESCRIBE {view_name}"
+                    ).fetchall()
+                    file_columns = {col[0] for col in file_schema_info}
 
                     # Create select expressions for each column
                     select_exprs = []
@@ -470,10 +536,19 @@ class Component(ComponentBase):
         os.makedirs(os.path.dirname(table_path), exist_ok=True)
 
         first_path = self.var_pq_files_paths[0]
-        schema_info = self.duck.execute(
-            f"SELECT * FROM parquet_scan('{first_path}') LIMIT 0"
-        ).description
+        # Create a temporary view to get schema using DESCRIBE
+        view_name = f"temp_view_{abs(hash(first_path))}"
+        self.duck.execute(f"""
+            CREATE OR REPLACE VIEW {view_name} AS
+            SELECT * FROM parquet_scan('{first_path}')
+        """)
+
+        # Get schema using DESCRIBE
+        schema_info = self.duck.execute(f"DESCRIBE {view_name}").fetchall()
         schema = {col[0]: col[1] for col in schema_info}
+
+        # Clean up the temporary view
+        self.duck.execute(f"DROP VIEW IF EXISTS {view_name}")
 
         temp_table = "temp_combined_data"
         self._create_temp_table(temp_table, schema, columns)
@@ -483,9 +558,14 @@ class Component(ComponentBase):
                 view_name = f"temp_view_{abs(hash(path))}"
 
                 try:
-                    schema_info = self.duck.execute(
-                        f"SELECT * FROM parquet_scan('{path}') LIMIT 0"
-                    ).description
+                    # Create a temporary view to get schema using DESCRIBE
+                    self.duck.execute(f"""
+                        CREATE OR REPLACE VIEW {view_name} AS
+                        SELECT * FROM parquet_scan('{path}')
+                    """)
+
+                    # Get schema using DESCRIBE
+                    schema_info = self.duck.execute(f"DESCRIBE {view_name}").fetchall()
                     file_columns = [col[0] for col in schema_info]
 
                     missing_columns = list(
@@ -497,11 +577,6 @@ class Component(ComponentBase):
                             'in configuration parameter "columns".\n'
                             f"Available columns are {file_columns}."
                         )
-
-                    self.duck.execute(f"""
-                        CREATE OR REPLACE VIEW {view_name} AS
-                        SELECT * FROM parquet_scan('{path}')
-                    """)
 
                     select_cols = [
                         self._get_coalesce_expr(col, schema.get(col, ""), filename)
