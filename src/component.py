@@ -1,21 +1,27 @@
 import os
 import glob
 import logging
+from typing import List, Optional
+from pydantic import BaseModel, Field
 
 from keboola.component import ComponentBase, UserException
 from keboola.component.dao import BaseType, ColumnDefinition
 from duckdb import connect, DuckDBPyConnection
 
-KEY_TABLE_COLUMNS = "columns"
-KEY_TABLE_NAME = "table_name"
-KEY_INCREMENTAL = "incremental"
-KEY_PRIMARY_KEYS = "primary_keys"
-KEY_FILENAME = "include_filename"
-KEY_EXTENSION_MASK = "file_mask"
+
+class ComponentConfig(BaseModel):
+    table_name: str = Field(..., description="Name of the output table")
+    columns: List[str] = Field(default_factory=list, description="List of columns to include")
+    incremental: bool = Field(default=False, description="Whether to run in incremental mode")
+    primary_keys: List[str] = Field(..., description="List of primary key columns")
+    include_filename: bool = Field(default=False, description="Whether to include filename column")
+    file_mask: str = Field(default="*.parquet", description="File mask for parquet files")
+    debug: bool = Field(default=False, description="Enable debug logging")
+    fill_empty_values: bool = Field(default=False, description="Fill empty values with defaults")
+    mode: Optional[str] = Field(default=None, description="Mode for backward compatibility")
+
+
 KEY_FILENAME_COLUMN = "parquet_filename"
-KEY_DEBUG = "debug"
-KEY_FILL_EMPTY = "fill_empty_values"
-KEY_MODE = "mode"  # for backward compatibility
 
 DUCK_DB_DIR = os.path.join(os.environ.get("TMPDIR", "/tmp"), "duckdb")
 DUCK_DB_MAX_MEMORY = "128MB"
@@ -25,21 +31,17 @@ class Component(ComponentBase):
     def __init__(self):
         super().__init__()
         params = self.configuration.parameters
+        config = ComponentConfig(**params)
 
-        self.table_name = params[KEY_TABLE_NAME]
-        self.columns = params.get(KEY_TABLE_COLUMNS, [])
-        self.incremental = bool(params.get(KEY_INCREMENTAL, False))
-        self.primary_keys = params[KEY_PRIMARY_KEYS]
-        self.include_filename = bool(params.get(KEY_FILENAME, False))
-        self.file_mask = params.get(KEY_EXTENSION_MASK, "*.parquet")
-        self.debug = params.get(KEY_DEBUG, False)
-        self.fill_empty_values = True if params.get(KEY_MODE) == "fill" or params.get(KEY_FILL_EMPTY) else False
+        self.table_name = config.table_name
+        self.columns = config.columns
+        self.incremental = config.incremental
+        self.primary_keys = config.primary_keys
+        self.include_filename = config.include_filename
+        self.file_mask = config.file_mask
+        self.debug = config.debug
+        self.fill_empty_values = config.fill_empty_values or (config.mode == "fill")
         self.duck = self.__init_duckdb()
-
-        if self.debug:
-            logging.getLogger().setLevel("DEBUG")
-
-        self.__validate_parameters()
 
     @staticmethod
     def __init_duckdb() -> DuckDBPyConnection:
@@ -50,16 +52,6 @@ class Component(ComponentBase):
             "max_memory": DUCK_DB_MAX_MEMORY,
         }
         return connect(config=config)
-
-    def __validate_parameters(self):
-        if not isinstance(self.table_name, str) or not self.table_name.strip():
-            raise UserException('Parameter "table_name" must be a non-empty string.')
-
-        if not isinstance(self.columns, list):
-            raise UserException('Parameter "columns" must be of type list.')
-
-        if not isinstance(self.primary_keys, list):
-            raise UserException('Parameter "primary_keys" must be of type list.')
 
     def _convert_dtypes(self, dtype) -> BaseType:
         dtype = str(dtype).upper()
