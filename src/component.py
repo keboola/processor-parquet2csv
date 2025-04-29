@@ -1,5 +1,4 @@
 import os
-import glob
 import logging
 from typing import List, Optional
 from pydantic import BaseModel, Field
@@ -98,26 +97,6 @@ class Component(ComponentBase):
 
         return BaseType.string()
 
-    def get_parquet_files(self):
-        all_parquet_files = glob.glob(
-            os.path.join(self.files_in_path, "**", self.file_mask),
-            recursive=True,
-        )
-        all_parquet_files.sort()
-
-        if len(all_parquet_files) == 0:
-            raise UserException("No parquet files found.")
-
-        nonempty_parquet_files = [path for path in all_parquet_files if os.path.getsize(path) > 0]
-        empty_parquet_files = [path for path in all_parquet_files if os.path.getsize(path) == 0]
-
-        logging.info(f"Skipping {len(empty_parquet_files)} empty files.")
-
-        self.var_pq_files_paths = nonempty_parquet_files
-        self.var_pq_files_names = [x.replace(self.files_in_path, "") for x in nonempty_parquet_files]
-
-        logging.debug(f"Processing {len(self.var_pq_files_names)} files. Names:\n{self.var_pq_files_names}.")
-
     def _get_standard_columns(self):
         """Get standard column names in the correct order"""
         return [
@@ -188,50 +167,50 @@ class Component(ComponentBase):
         table_path = os.path.join(self.tables_out_path, self.table_name)
         os.makedirs(os.path.dirname(table_path), exist_ok=True)
 
-        # Get unified schema from all files
-        if self.fill_empty_values:
-            schema = self._get_unified_schema()
-        else:
-            # For fast mode, just use schema from first file
-            self.duck.execute(f"CREATE TABLE base_table AS SELECT * FROM read_parquet('{self.var_pq_files_paths[0]}')")
+        # Use DuckDB to list all non-empty parquet files matching the mask
+        parquet_glob = os.path.join(self.files_in_path, "**", self.file_mask)
+        files_query = f"SELECT DISTINCT filename FROM read_parquet('{parquet_glob}', filename=true)"
+        all_files = [row[0] for row in self.duck.execute(files_query).fetchall()]
+        all_files = [f for f in all_files if os.path.getsize(f) > 0]
+        if not all_files:
+            raise UserException("No parquet files found.")
+
+        # Determine columns to select
+        if not self.columns:
+            # Get schema from a sample file
+            self.duck.execute(f"CREATE TABLE base_table AS SELECT * FROM read_parquet('{all_files[0]}')")
             schema = {row[0]: row[1] for row in self.duck.execute("DESCRIBE base_table").fetchall()}
             self.duck.execute("DROP TABLE base_table")
-
-        # If no columns specified, use all columns from schema
-        if not self.columns:
             self.columns = [col for col in schema.keys()]
+        else:
+            schema = {col: "STRING" for col in self.columns}  # fallback if not in fill mode
 
-        # Build the main query
-        query_parts = []
+        # Build SELECT columns
+        select_columns = []
+        for col in self.columns:
+            if self.fill_empty_values:
+                default_val = self._get_default_value(col)
+                select_columns.append(f'COALESCE("{col}", {default_val}) as "{col}"')
+            else:
+                select_columns.append(f'"{col}"')
 
-        # Process each file
-        for f in self.var_pq_files_paths:
-            select_columns = []
-            for col in self.columns:
-                # Find the actual column name in schema (case-insensitive)
-                actual_col = next((k for k in schema.keys() if k.upper() == col.upper()), None)
-                if actual_col:
-                    if self.fill_empty_values:
-                        default_val = self._get_default_value(col)
-                        select_columns.append(f'COALESCE("{actual_col}", {default_val}) as "{col}"')
-                    else:
-                        select_columns.append(f'"{actual_col}" as "{col}"')
-                else:
-                    if self.fill_empty_values:
-                        # For missing columns in fill mode, add default value
-                        default_val = self._get_default_value(col)
-                        select_columns.append(f'{default_val} as "{col}"')
-                    else:
-                        raise UserException(f"Column {col} not found in Parquet schema")
+        # Add filename column if needed
+        filename_param = ""
+        if self.include_filename:
+            # Normalize filename to '/basename.parquet' with forward slashes
+            select_columns.append(
+                f"REPLACE('/' || regexp_replace(filename, '^.*[\\\\/]', ''), '\\\\', '/') as {KEY_FILENAME_COLUMN}"
+            )
+            filename_param = ", filename=True"
+        else:
+            filename_param = ""
 
-            if self.include_filename:
-                filename = "/" + os.path.basename(f)
-                select_columns.append(f"'{filename}' as {KEY_FILENAME_COLUMN}")
+        # Use union_by_name for fill mode
+        union_by_name_param = ", union_by_name=True" if self.fill_empty_values else ""
 
-            query_parts.append(f"SELECT {', '.join(select_columns)} FROM read_parquet('{f}')")
-
-        # Combine all parts with UNION ALL
-        query = " UNION ALL ".join(query_parts)
+        # Build the query
+        select_clause = ", ".join(select_columns)
+        query = f"SELECT {select_clause} FROM read_parquet('{parquet_glob}'{filename_param}{union_by_name_param})"
 
         # Create result table and export to CSV
         self.duck.execute(f"CREATE TABLE result_table AS {query}")
@@ -240,26 +219,23 @@ class Component(ComponentBase):
             (HEADER FALSE, DELIMITER ',', QUOTE '"')
         """)
 
-        # Create manifest with columns in the same order as in the query
+        # Get schema from result_table to ensure correct order/types
+        result_schema = self.duck.execute("DESCRIBE result_table").fetchall()
+        result_schema_dict = {col_name: col_type for col_name, col_type, *_ in result_schema}
+
+        # Build manifest schema in the correct order: self.columns, then parquet_filename if needed
+        manifest_columns = list(self.columns)  # copy to avoid mutating self.columns
+        if self.include_filename and KEY_FILENAME_COLUMN in result_schema_dict:
+            manifest_columns.append(KEY_FILENAME_COLUMN)
+
         schema_def = {}
-        for col in self.columns:
-            # Get the actual column type from schema
-            actual_col = next((k for k in schema.keys() if k.upper() == col.upper()), None)
-            if actual_col:
-                col_type = schema[actual_col]
-            else:
-                col_type = "STRING"  # Default type for missing columns
-
-            schema_def[col] = ColumnDefinition(
-                data_types=self._convert_dtypes(col_type),
-                nullable=True,
-                primary_key=(col in self.primary_keys),
-            )
-
-        if self.include_filename:
-            schema_def[KEY_FILENAME_COLUMN] = ColumnDefinition(
-                data_types=BaseType.string(), nullable=True, primary_key=False
-            )
+        for col in manifest_columns:
+            if col in result_schema_dict:
+                schema_def[col] = ColumnDefinition(
+                    data_types=self._convert_dtypes(result_schema_dict[col]),
+                    nullable=True,
+                    primary_key=(col in self.primary_keys),
+                )
 
         out_table = self.create_out_table_definition(
             name=self.table_name, schema=schema_def, primary_key=self.primary_keys
@@ -270,7 +246,6 @@ class Component(ComponentBase):
         self.duck.execute("DROP TABLE IF EXISTS result_table")
 
     def run(self):
-        self.get_parquet_files()
         self.process()
 
 
