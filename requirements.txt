@@ -1,4 +1,4 @@
-keboola.component==1.6.7
+keboola.component==1.6.10
 python-snappy==0.7.2
 duckdb>=1.2.0
 pydantic==2.5.2

@@ -17,7 +17,7 @@ class ComponentConfig(BaseModel):
     file_mask: str = Field(default="*.parquet", description="File mask for parquet files")
     debug: bool = Field(default=False, description="Enable debug logging")
     fill_empty_values: bool = Field(default=False, description="Fill empty values with defaults")
-    mode: Optional[str] = Field(default=None, description="Mode for backward compatibility")
+    mode: Optional[str] = Field(default="fast", description="Mode for backward compatibility")
 
 
 KEY_FILENAME_COLUMN = "parquet_filename"
@@ -40,6 +40,7 @@ class Component(ComponentBase):
         self.file_mask = config.file_mask
         self.debug = config.debug
         self.fill_empty_values = config.fill_empty_values or (config.mode == "fill")
+        self.mode = config.mode
         self.duck = self.__init_duckdb()
 
     @staticmethod
@@ -97,38 +98,6 @@ class Component(ComponentBase):
 
         return BaseType.string()
 
-    def _get_standard_columns(self):
-        """Get standard column names in the correct order"""
-        return [
-            "STRING_A",
-            "INTEGER",
-            "NUMERIC",
-            "FLOAT",
-            "BOOLEAN",
-            "DATE",
-            "TIMESTAMP",
-            "STRING_B",
-        ]
-
-    def _get_standard_type(self, col_name):
-        """Get standard type based on column name"""
-        col = col_name.upper()
-        if col in ["STRING_A", "STRING_B"]:
-            return BaseType.string()
-        elif col == "INTEGER":
-            return BaseType.integer()
-        elif col == "NUMERIC":
-            return BaseType.numeric()
-        elif col == "FLOAT":
-            return BaseType.float()
-        elif col == "BOOLEAN":
-            return BaseType.boolean()
-        elif col == "DATE":
-            return BaseType.date()
-        elif col == "TIMESTAMP":
-            return BaseType.timestamp()
-        return BaseType.string()  # default to string for unknown types
-
     def _get_default_value(self, col_name):
         """Get default value based on column name"""
         col = col_name.upper()
@@ -143,106 +112,143 @@ class Component(ComponentBase):
         else:
             return "''"
 
-    def _get_unified_schema(self):
-        """Get unified schema from all parquet files"""
-        # Create temporary tables for all files to get their schemas
-        schemas = []
-        for i, f in enumerate(self.var_pq_files_paths):
-            table_name = f"temp_table_{i}"
-            self.duck.execute(f"CREATE TABLE {table_name} AS SELECT * FROM read_parquet('{f}')")
-            schema = {row[0]: row[1] for row in self.duck.execute(f"DESCRIBE {table_name}").fetchall()}
-            schemas.append(schema)
-            self.duck.execute(f"DROP TABLE {table_name}")
-
-        # Create unified schema
-        unified_schema = {}
-        for schema in schemas:
-            for col, type_ in schema.items():
-                if col.upper() not in unified_schema:
-                    unified_schema[col.upper()] = type_
-
-        return unified_schema
+    def _get_default_value_by_type(self, dtype):
+        dtype = str(dtype).upper()
+        if dtype in [
+            "INTEGER",
+            "TINYINT",
+            "SMALLINT",
+            "BIGINT",
+            "HUGEINT",
+            "UTINYINT",
+            "USMALLINT",
+            "UINTEGER",
+            "UBIGINT",
+            "UHUGEINT",
+        ]:
+            return "0"
+        if dtype in ["REAL", "DECIMAL", "FLOAT", "DOUBLE", "NUMERIC"]:
+            return "0.0"
+        if dtype in ["BOOLEAN", "BOOL"]:
+            return "'false'"
+        if dtype in ["DATE", "TIMESTAMP", "TIMESTAMP_NS", "TIMESTAMP WITH TIME ZONE", "DATETIME"]:
+            return "NULL"
+        return "''"
 
     def process(self):
         table_path = os.path.join(self.tables_out_path, self.table_name)
         os.makedirs(os.path.dirname(table_path), exist_ok=True)
 
-        # Use DuckDB to list all non-empty parquet files matching the mask
         parquet_glob = os.path.join(self.files_in_path, "**", self.file_mask)
-        files_query = f"SELECT DISTINCT filename FROM read_parquet('{parquet_glob}', filename=true)"
+        # Only set filename=True if needed
+        filename_param = ", filename=True" if self.include_filename else ""
+        files_query = (
+            f"SELECT DISTINCT filename FROM read_parquet('{parquet_glob}'{filename_param}) WHERE length(filename) > 0"
+        )
         all_files = [row[0] for row in self.duck.execute(files_query).fetchall()]
-        all_files = [f for f in all_files if os.path.getsize(f) > 0]
         if not all_files:
             raise UserException("No parquet files found.")
 
-        # Determine columns to select
-        if not self.columns:
-            # Get schema from a sample file
-            self.duck.execute(f"CREATE TABLE base_table AS SELECT * FROM read_parquet('{all_files[0]}')")
-            schema = {row[0]: row[1] for row in self.duck.execute("DESCRIBE base_table").fetchall()}
-            self.duck.execute("DROP TABLE base_table")
-            self.columns = [col for col in schema.keys()]
-        else:
-            schema = {col: "STRING" for col in self.columns}  # fallback if not in fill mode
+        mode = self.mode or "fast"
 
-        # Build SELECT columns
+        # Get columns and schema based on mode
+        if mode == "fast":
+            # Fast mode: Use schema from first file only
+            if self.columns:
+                columns = self.columns
+                schema = {col: "STRING" for col in columns}
+            else:
+                self.duck.execute(f"CREATE TABLE base_table AS SELECT * FROM read_parquet('{all_files[0]}') LIMIT 0")
+                schema = {row[0]: row[1] for row in self.duck.execute("DESCRIBE base_table").fetchall()}
+                self.duck.execute("DROP TABLE base_table")
+                columns = list(schema.keys())
+        elif mode == "fill":
+            # Fill mode: Union schemas from all files
+            unioned_schema = {}
+            for file in all_files:
+                self.duck.execute(f"CREATE TABLE temp_schema AS SELECT * FROM read_parquet('{file}') LIMIT 0")
+                for name, dtype, *_ in self.duck.execute("DESCRIBE temp_schema").fetchall():
+                    if name not in unioned_schema:
+                        unioned_schema[name] = dtype
+                self.duck.execute("DROP TABLE temp_schema")
+
+            if self.columns:
+                columns = self.columns
+            else:
+                columns = list(unioned_schema.keys())
+            schema = {col: unioned_schema.get(col, "STRING") for col in columns}
+        else:  # strict mode
+            # Strict mode: Must have specified columns
+            if not self.columns:
+                raise UserException("Columns must be specified in strict mode")
+            columns = self.columns
+
+            # Check all files have required columns
+            for file in all_files:
+                self.duck.execute(f"CREATE TABLE temp_schema AS SELECT * FROM read_parquet('{file}') LIMIT 0")
+                file_columns = {row[0] for row in self.duck.execute("DESCRIBE temp_schema").fetchall()}
+                self.duck.execute("DROP TABLE temp_schema")
+                missing = set(columns) - file_columns
+                if missing:
+                    raise UserException(f"File '{file}' is missing required columns: {sorted(missing)}")
+
+            # Get types from first file for consistency
+            self.duck.execute(f"CREATE TABLE base_table AS SELECT * FROM read_parquet('{all_files[0]}') LIMIT 0")
+            first_file_schema = {row[0]: row[1] for row in self.duck.execute("DESCRIBE base_table").fetchall()}
+            self.duck.execute("DROP TABLE base_table")
+            schema = {col: first_file_schema.get(col, "STRING") for col in columns}
+
+        # --- Build SELECT columns with correct default values and order ---
         select_columns = []
-        for col in self.columns:
-            if self.fill_empty_values:
-                default_val = self._get_default_value(col)
+        for col in columns:
+            col_type = schema.get(col, "STRING")
+            if mode == "fill" or self.fill_empty_values:
+                default_val = self._get_default_value_by_type(col_type)
                 select_columns.append(f'COALESCE("{col}", {default_val}) as "{col}"')
             else:
                 select_columns.append(f'"{col}"')
 
         # Add filename column if needed
-        filename_param = ""
         if self.include_filename:
-            # Normalize filename to '/basename.parquet' with forward slashes
             select_columns.append(
-                f"REPLACE('/' || regexp_replace(filename, '^.*[\\\\/]', ''), '\\\\', '/') as {KEY_FILENAME_COLUMN}"
+                f"COALESCE(REPLACE('/' || regexp_replace(filename, '^.*[\\\\/]', ''), '\\\\', '/'), '') as {KEY_FILENAME_COLUMN}"  # noqa: E501
             )
-            filename_param = ", filename=True"
-        else:
-            filename_param = ""
 
-        # Use union_by_name for fill mode
-        union_by_name_param = ", union_by_name=True" if self.fill_empty_values else ""
+        # Mode-specific DuckDB parameters
+        union_by_name_param = ", union_by_name=True" if mode in ("fill", "strict") else ""
 
         # Build the query
         select_clause = ", ".join(select_columns)
         query = f"SELECT {select_clause} FROM read_parquet('{parquet_glob}'{filename_param}{union_by_name_param})"
-
-        # Create result table and export to CSV
         self.duck.execute(f"CREATE TABLE result_table AS {query}")
+
         self.duck.execute(f"""
             COPY result_table TO '{table_path}'
             (HEADER FALSE, DELIMITER ',', QUOTE '"')
         """)
 
-        # Get schema from result_table to ensure correct order/types
-        result_schema = self.duck.execute("DESCRIBE result_table").fetchall()
-        result_schema_dict = {col_name: col_type for col_name, col_type, *_ in result_schema}
-
-        # Build manifest schema in the correct order: self.columns, then parquet_filename if needed
-        manifest_columns = list(self.columns)  # copy to avoid mutating self.columns
-        if self.include_filename and KEY_FILENAME_COLUMN in result_schema_dict:
-            manifest_columns.append(KEY_FILENAME_COLUMN)
-
+        # Build manifest schema in the correct order
         schema_def = {}
-        for col in manifest_columns:
-            if col in result_schema_dict:
-                schema_def[col] = ColumnDefinition(
-                    data_types=self._convert_dtypes(result_schema_dict[col]),
-                    nullable=True,
-                    primary_key=(col in self.primary_keys),
-                )
+        for col in columns:
+            schema_def[col] = ColumnDefinition(
+                data_types=self._convert_dtypes(schema.get(col, "STRING")),
+                nullable=True,
+                primary_key=(col in self.primary_keys),
+            )
+
+        # Only add filename column to schema if it was requested
+        if self.include_filename:
+            schema_def[KEY_FILENAME_COLUMN] = ColumnDefinition(
+                data_types=BaseType.string(),
+                nullable=True,
+                primary_key=False,
+            )
 
         out_table = self.create_out_table_definition(
             name=self.table_name, schema=schema_def, primary_key=self.primary_keys
         )
         self.write_manifest(out_table)
 
-        # Cleanup
         self.duck.execute("DROP TABLE IF EXISTS result_table")
 
     def run(self):
