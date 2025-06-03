@@ -1,13 +1,12 @@
 import os
 import logging
-import time
 from collections import OrderedDict
 from typing import List, Optional
 from pydantic import BaseModel, Field
 
 from keboola.component import ComponentBase, UserException
 from keboola.component.dao import BaseType, ColumnDefinition
-from duckdb import connect, DuckDBPyConnection, ConversionException
+from duckdb import connect, DuckDBPyConnection
 
 
 class ComponentConfig(BaseModel):
@@ -127,11 +126,9 @@ class Component(ComponentBase):
 
         parquet_glob = os.path.join(self.files_in_path, "**", self.file_mask)
         union_by_name_param = ", union_by_name=true" if self.mode in ("fill", "strict") else ""
-        selected_columns = ', '.join(self.columns) if self.columns else "*"
+        selected_columns = ", ".join(self.columns) if self.columns else "*"
 
-        stage_query = (
-            f"CREATE OR REPLACE TABLE stage AS SELECT {selected_columns} FROM read_parquet('{parquet_glob}', filename=True{union_by_name_param})"
-        )
+        stage_query = f"CREATE OR REPLACE TABLE stage AS SELECT {selected_columns} FROM read_parquet('{parquet_glob}', filename=True{union_by_name_param})"  # noqa: E501
         self.duck.execute(stage_query)
 
         if not self.include_filename:
@@ -140,7 +137,7 @@ class Component(ComponentBase):
         self.duck.execute(f"COPY stage TO '{table_path}' (HEADER FALSE, DELIMITER ',', QUOTE '\"')")
 
         # Build manifest
-        table_meta = self.duck.execute(f"""DESCRIBE stage;""").fetchall()
+        table_meta = self.duck.execute("""DESCRIBE stage;""").fetchall()
         schema = OrderedDict(
             {c[0]: ColumnDefinition(data_types=BaseType(dtype=self._convert_dtypes(c[1]))) for c in table_meta}
         )
@@ -152,7 +149,7 @@ class Component(ComponentBase):
             incremental=self.incremental,
             has_header=True,
         )
-        
+
         self.write_manifest(out_table)
 
         self.duck.execute("DROP TABLE IF EXISTS stage")
