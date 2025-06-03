@@ -1,11 +1,13 @@
 import os
 import logging
+import time
+from collections import OrderedDict
 from typing import List, Optional
 from pydantic import BaseModel, Field
 
 from keboola.component import ComponentBase, UserException
 from keboola.component.dao import BaseType, ColumnDefinition
-from duckdb import connect, DuckDBPyConnection
+from duckdb import connect, DuckDBPyConnection, ConversionException
 
 
 class ComponentConfig(BaseModel):
@@ -20,15 +22,13 @@ class ComponentConfig(BaseModel):
     mode: Optional[str] = Field(default="fast", description="Mode for backward compatibility")
 
 
-KEY_FILENAME_COLUMN = "parquet_filename"
-
 DUCK_DB_DIR = os.path.join(os.environ.get("TMPDIR", "/tmp"), "duckdb")
 DUCK_DB_MAX_MEMORY = "128MB"
 
 
 class Component(ComponentBase):
     def __init__(self):
-        super().__init__()
+        super().__init__(data_path_override=r"C:\Users\alber\DATA\_work\processor-parquet2csv\data")
         params = self.configuration.parameters
         config = ComponentConfig(**params)
 
@@ -126,104 +126,36 @@ class Component(ComponentBase):
         os.makedirs(os.path.dirname(table_path), exist_ok=True)
 
         parquet_glob = os.path.join(self.files_in_path, "**", self.file_mask)
-        filename_param = ", filename=True" if self.include_filename else ""
-        files_query = (
-            f"SELECT DISTINCT filename FROM read_parquet('{parquet_glob}'{filename_param}) WHERE length(filename) > 0"
+        union_by_name_param = ", union_by_name=true" if self.mode in ("fill", "strict") else ""
+        selected_columns = ', '.join(self.columns) if self.columns else "*"
+
+        stage_query = (
+            f"CREATE OR REPLACE TABLE stage AS SELECT {selected_columns} FROM read_parquet('{parquet_glob}', filename=True{union_by_name_param})"
         )
-        all_files = [row[0] for row in self.duck.execute(files_query).fetchall()]
-        if not all_files:
-            raise UserException("No parquet files found.")
+        self.duck.execute(stage_query)
 
-        # Get columns and schema based on mode
-        if self.mode == "fill":
-            # Fill mode: Union schemas from all files
-            unioned_schema = {}
-            for file in all_files:
-                for name, dtype, *_ in self.duck.execute(
-                    f"DESCRIBE SELECT * FROM read_parquet('{file}') LIMIT 0"
-                ).fetchall():
-                    if name not in unioned_schema:
-                        unioned_schema[name] = dtype
+        if not self.include_filename:
+            self.duck.execute("ALTER TABLE stage DROP COLUMN IF EXISTS filename")
 
-            columns = self.columns or list(unioned_schema.keys())
-            schema = {col: unioned_schema.get(col, "STRING") for col in columns}
-
-        elif self.mode == "strict":
-            if not self.columns:
-                raise UserException("Columns must be specified in strict mode")
-
-            # Check all files have required columns
-            for file in all_files:
-                file_columns = {
-                    row[0]
-                    for row in self.duck.execute(f"DESCRIBE SELECT * FROM read_parquet('{file}') LIMIT 0").fetchall()
-                }
-                missing = set(self.columns) - file_columns
-                if missing:
-                    raise UserException(f"File '{file}' is missing required columns: {sorted(missing)}")
-
-            # Get types from first file
-            first_file_schema = {
-                row[0]: row[1]
-                for row in self.duck.execute(
-                    f"DESCRIBE SELECT * FROM read_parquet('{all_files[0]}') LIMIT 0"
-                ).fetchall()
-            }
-            columns = self.columns
-            schema = {col: first_file_schema[col] for col in columns}  # No STRING fallback needed
-
-        else:  # fast mode
-            if self.columns:
-                schema = {col: "STRING" for col in self.columns}
-                columns = self.columns
-            else:
-                schema = {
-                    row[0]: row[1]
-                    for row in self.duck.execute(
-                        f"DESCRIBE SELECT * FROM read_parquet('{all_files[0]}') LIMIT 0"
-                    ).fetchall()
-                }
-                columns = list(schema.keys())
-
-        # Build SELECT columns
-        select_columns = []
-        for col in columns:
-            if self.fill_empty_values:
-                default_val = self._get_default_value_by_type(schema[col])
-                select_columns.append(f'COALESCE("{col}", {default_val}) as "{col}"')
-            else:
-                select_columns.append(f'"{col}"')
-
-        if self.include_filename:
-            select_columns.append(
-                f"COALESCE(REPLACE('/' || regexp_replace(filename, '^.*[\\\\/]', ''), '\\\\', '/'), '') as {KEY_FILENAME_COLUMN}"  # noqa: E501
-            )
-
-        # Build and execute query
-        union_by_name_param = ", union_by_name=True" if self.mode in ("fill", "strict") else ""
-        query = f"SELECT {', '.join(select_columns)} FROM read_parquet('{parquet_glob}'{filename_param}{union_by_name_param})"  # noqa: E501
-
-        self.duck.execute(f"CREATE TABLE result_table AS {query}")
-        self.duck.execute(f"COPY result_table TO '{table_path}' (HEADER FALSE, DELIMITER ',', QUOTE '\"')")
+        self.duck.execute(f"COPY stage TO '{table_path}' (HEADER FALSE, DELIMITER ',', QUOTE '\"')")
 
         # Build manifest
-        schema_def = {
-            col: ColumnDefinition(
-                data_types=self._convert_dtypes(schema[col]), nullable=True, primary_key=(col in self.primary_keys)
-            )
-            for col in columns
-        }
-
-        if self.include_filename:
-            schema_def[KEY_FILENAME_COLUMN] = ColumnDefinition(
-                data_types=BaseType.string(), nullable=True, primary_key=False
-            )
-
-        self.write_manifest(
-            self.create_out_table_definition(name=self.table_name, schema=schema_def, primary_key=self.primary_keys)
+        table_meta = self.duck.execute(f"""DESCRIBE stage;""").fetchall()
+        schema = OrderedDict(
+            {c[0]: ColumnDefinition(data_types=BaseType(dtype=self._convert_dtypes(c[1]))) for c in table_meta}
         )
 
-        self.duck.execute("DROP TABLE IF EXISTS result_table")
+        out_table = self.create_out_table_definition(
+            f"{self.table_name}.csv",
+            schema=schema,
+            primary_key=self.primary_keys,
+            incremental=self.incremental,
+            has_header=True,
+        )
+        
+        self.write_manifest(out_table)
+
+        self.duck.execute("DROP TABLE IF EXISTS stage")
 
     def run(self):
         self.process()

@@ -1,5 +1,5 @@
 keboola.component==1.6.10
 python-snappy==0.7.2
-duckdb>=1.2.0
+duckdb>=1.3.0
 pydantic==2.5.2
 https://bitbucket.org/kds_consulting_team/datadirtest/get/1.8.6.zip#egg=datadirtest

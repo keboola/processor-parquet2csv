@@ -6,7 +6,7 @@
     "primary_keys": [
       "TIMESTAMP"
     ],
-    "include_filename": true,
+    "include_filename": false,
     "debug": true,
     "columns": []
   },
