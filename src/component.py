@@ -104,6 +104,7 @@ class Component(ComponentBase):
         parquet_glob = os.path.join(self.files_in_path, "**", self.file_mask)
         union_by_name_param = ", union_by_name=true" if self.mode in ("fill", "strict") else ""
         selected_columns = ", ".join(self.columns) if self.columns else "*"
+        selected_columns += ", filename" if self.include_filename and selected_columns != "*" else ""
 
         stage_query = f"CREATE OR REPLACE TABLE stage AS SELECT {selected_columns} FROM read_parquet('{parquet_glob}', filename=True{union_by_name_param})"  # noqa: E501
         self.duck.execute(stage_query)
@@ -111,10 +112,7 @@ class Component(ComponentBase):
         if not self.include_filename:
             self.duck.execute("ALTER TABLE stage DROP COLUMN IF EXISTS filename")
 
-        if self.fill_empty_values:
-            self.duck.execute(f"COPY stage TO '{table_path}' (HEADER FALSE, DELIMITER ',', NULLSTR '-')")
-        else:
-            self.duck.execute(f"COPY stage TO '{table_path}' (HEADER FALSE, DELIMITER ',')")
+        self.duck.execute(f"COPY stage TO '{table_path}' (HEADER FALSE, DELIMITER ',')")
 
         # Build manifest
         table_meta = self.duck.execute("""DESCRIBE stage;""").fetchall()
@@ -125,7 +123,7 @@ class Component(ComponentBase):
             schema=schema,
             primary_key=self.primary_keys,
             incremental=self.incremental,
-            has_header=True,
+            has_header=False,
         )
 
         self.write_manifest(out_table)
