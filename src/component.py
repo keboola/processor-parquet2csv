@@ -27,7 +27,7 @@ DUCK_DB_MAX_MEMORY = "128MB"
 
 class Component(ComponentBase):
     def __init__(self):
-        super().__init__(data_path_override=r"C:\Users\alber\DATA\_work\processor-parquet2csv\data")
+        super().__init__(data_path_override=r"./data")
         params = self.configuration.parameters
         config = ComponentConfig(**params)
 
@@ -138,9 +138,7 @@ class Component(ComponentBase):
 
         # Build manifest
         table_meta = self.duck.execute("""DESCRIBE stage;""").fetchall()
-        schema = OrderedDict(
-            {c[0]: ColumnDefinition(data_types=BaseType(dtype=self._convert_dtypes(c[1]))) for c in table_meta}
-        )
+        schema = OrderedDict({c[0]: ColumnDefinition(data_types=self._convert_dtypes(c[1])) for c in table_meta})
 
         out_table = self.create_out_table_definition(
             f"{self.table_name}.csv",
