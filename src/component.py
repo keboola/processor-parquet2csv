@@ -27,7 +27,7 @@ DUCK_DB_MAX_MEMORY = "128MB"
 
 class Component(ComponentBase):
     def __init__(self):
-        super().__init__(data_path_override=r"./data")
+        super().__init__()
         params = self.configuration.parameters
         config = ComponentConfig(**params)
 
