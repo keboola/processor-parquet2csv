@@ -97,51 +97,31 @@ class Component(ComponentBase):
 
         return BaseType.string()
 
-    def _get_default_value_by_type(self, dtype):
-        dtype = str(dtype).upper()
-        if dtype in [
-            "INTEGER",
-            "TINYINT",
-            "SMALLINT",
-            "BIGINT",
-            "HUGEINT",
-            "UTINYINT",
-            "USMALLINT",
-            "UINTEGER",
-            "UBIGINT",
-            "UHUGEINT",
-        ]:
-            return "0"
-        if dtype in ["REAL", "DECIMAL", "FLOAT", "DOUBLE", "NUMERIC"]:
-            return "0.0"
-        if dtype in ["BOOLEAN", "BOOL"]:
-            return "'false'"
-        if dtype in ["DATE", "TIMESTAMP", "TIMESTAMP_NS", "TIMESTAMP WITH TIME ZONE", "DATETIME"]:
-            return "NULL"
-        return "''"
-
     def process(self):
         table_path = os.path.join(self.tables_out_path, self.table_name)
         os.makedirs(os.path.dirname(table_path), exist_ok=True)
 
         parquet_glob = os.path.join(self.files_in_path, "**", self.file_mask)
-        union_by_name_param = ", union_by_name=true" if self.mode in ("fill", "strict") else ""
+        union_by_name_param = "union_by_name=true" if self.mode in ("fill", "strict") else ""
         selected_columns = ", ".join(self.columns) if self.columns else "*"
 
-        stage_query = f"CREATE OR REPLACE TABLE stage AS SELECT {selected_columns} FROM read_parquet('{parquet_glob}', filename=True{union_by_name_param})"  # noqa: E501
+        stage_query = f"CREATE OR REPLACE TABLE stage AS SELECT {selected_columns} FROM read_parquet('{parquet_glob}', filename=True, {union_by_name_param})"  # noqa: E501
         self.duck.execute(stage_query)
 
         if not self.include_filename:
             self.duck.execute("ALTER TABLE stage DROP COLUMN IF EXISTS filename")
 
-        self.duck.execute(f"COPY stage TO '{table_path}' (HEADER FALSE, DELIMITER ',', QUOTE '\"')")
+        if self.fill_empty_values:
+            self.duck.execute(f"COPY stage TO '{table_path}' (HEADER FALSE, DELIMITER ',', NULLSTR '-')")
+        else:
+            self.duck.execute(f"COPY stage TO '{table_path}' (HEADER FALSE, DELIMITER ',')")
 
         # Build manifest
         table_meta = self.duck.execute("""DESCRIBE stage;""").fetchall()
         schema = OrderedDict({c[0]: ColumnDefinition(data_types=self._convert_dtypes(c[1])) for c in table_meta})
 
         out_table = self.create_out_table_definition(
-            f"{self.table_name}.csv",
+            self.table_name,
             schema=schema,
             primary_key=self.primary_keys,
             incremental=self.incremental,

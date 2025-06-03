@@ -7,7 +7,7 @@
     "primary_keys": [
       "TIMESTAMP"
     ],
-    "include_filename": false,
+    "include_filename": true,
     "debug": true
   },
   "image_parameters": {}
