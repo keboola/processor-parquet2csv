@@ -25,6 +25,7 @@ DUCK_DB_DIR = os.path.join(os.environ.get("TMPDIR", "/tmp"), "duckdb")
 DUCK_DB_MAX_MEMORY = "128MB"
 
 
+# data_path_override=r'./data'
 class Component(ComponentBase):
     def __init__(self):
         super().__init__()
@@ -103,8 +104,15 @@ class Component(ComponentBase):
 
         parquet_glob = os.path.join(self.files_in_path, "**", self.file_mask)
         union_by_name_param = ", union_by_name=true" if self.mode in ("fill", "strict") else ""
-        selected_columns = ", ".join(self.columns) if self.columns else "*"
-        selected_columns += ", filename" if self.include_filename and selected_columns != "*" else ""
+
+        if self.include_filename:
+            filename_expr = ", concat('/', regexp_replace(filename, '^.*[\\\\/]', '')) as filename"
+            if self.columns:
+                selected_columns = f"{', '.join(self.columns)}{filename_expr}"
+            else:
+                selected_columns = f"*{filename_expr}"
+        else:
+            selected_columns = ", ".join(self.columns) if self.columns else "*"
 
         stage_query = f"CREATE OR REPLACE TABLE stage AS SELECT {selected_columns} FROM read_parquet('{parquet_glob}', filename=True{union_by_name_param})"  # noqa: E501
         self.duck.execute(stage_query)
