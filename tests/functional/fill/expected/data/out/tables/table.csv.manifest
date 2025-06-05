@@ -1,1 +1,1 @@
-{"primary_key": ["TIMESTAMP"], "write_always": false, "delimiter": ",", "enclosure": "\"", "columns": ["STRING_A", "INTEGER", "NUMERIC", "FLOAT", "BOOLEAN", "DATE", "TIMESTAMP", "STRING_B", "parquet_filename"]}
+{"incremental": true, "primary_key": ["TIMESTAMP"], "write_always": false, "delimiter": ",", "enclosure": "\"", "columns": ["STRING_A", "INTEGER", "NUMERIC", "FLOAT", "BOOLEAN", "DATE", "TIMESTAMP", "STRING_B", "parquet_filename"]}
