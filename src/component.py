@@ -13,7 +13,7 @@ class ComponentConfig(BaseModel):
     table_name: str = Field(..., description="Name of the output table")
     columns: List[str] = Field(default_factory=list, description="List of columns to include")
     incremental: bool = Field(default=False, description="Whether to run in incremental mode")
-    primary_keys: List[str] = Field(..., description="List of primary key columns")
+    primary_keys: List[str] = Field(default_factory=list, description="List of primary key columns")
     include_filename: bool = Field(default=False, description="Whether to include filename column")
     file_mask: str = Field(default="*.parquet", description="File mask for parquet files")
     debug: bool = Field(default=False, description="Enable debug logging")
@@ -22,7 +22,7 @@ class ComponentConfig(BaseModel):
 
 
 DUCK_DB_DIR = os.path.join(os.environ.get("TMPDIR", "/tmp"), "duckdb")
-DUCK_DB_MAX_MEMORY = "128MB"
+DUCK_DB_MAX_MEMORY = "768MB"
 
 
 class Component(ComponentBase):
