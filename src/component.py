@@ -138,6 +138,7 @@ class Component(ComponentBase):
         self.write_manifest(out_table)
 
         self.duck.execute("DROP TABLE IF EXISTS stage")
+        logging.info(f"Data successfully converted to {table_path}")
 
     def run(self):
         self.process()
