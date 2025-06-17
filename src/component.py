@@ -49,6 +49,7 @@ class Component(ComponentBase):
             "temp_directory": DUCK_DB_DIR,
             "threads": "1",
             "max_memory": DUCK_DB_MAX_MEMORY,
+            "preserve_insertion_order": False,
         }
         return connect(config=config)
 
