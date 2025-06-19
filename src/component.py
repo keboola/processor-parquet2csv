@@ -19,10 +19,11 @@ class ComponentConfig(BaseModel):
     debug: bool = Field(default=False, description="Enable debug logging")
     fill_empty_values: bool = Field(default=False, description="Fill empty values with defaults")
     mode: Optional[str] = Field(default="fast", description="Mode for backward compatibility")
+    memory_limit: Optional[str] = Field(default="768MB", description="Memory limit for DuckDB")
+    preserve_insertion_order: Optional[bool] = Field(default=True, description="Preserve insertion order")
 
 
 DUCK_DB_DIR = os.path.join(os.environ.get("TMPDIR", "/tmp"), "duckdb")
-DUCK_DB_MAX_MEMORY = "768MB"
 
 
 class Component(ComponentBase):
@@ -40,16 +41,17 @@ class Component(ComponentBase):
         self.debug = config.debug
         self.fill_empty_values = config.fill_empty_values or (config.mode == "fill")
         self.mode = config.mode
+        self.memory_limit = config.memory_limit
+        self.preserve_insertion_order = config.preserve_insertion_order
         self.duck = self.__init_duckdb()
 
-    @staticmethod
-    def __init_duckdb() -> DuckDBPyConnection:
+    def __init_duckdb(self) -> DuckDBPyConnection:
         os.makedirs(DUCK_DB_DIR, exist_ok=True)
         config = {
             "temp_directory": DUCK_DB_DIR,
             "threads": "1",
-            "max_memory": DUCK_DB_MAX_MEMORY,
-            "preserve_insertion_order": False,
+            "max_memory": self.memory_limit,
+            "preserve_insertion_order": self.preserve_insertion_order,
         }
         return connect(config=config)
 

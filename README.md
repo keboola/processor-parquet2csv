@@ -29,7 +29,9 @@ A sample of the configuration object:
             "created_at"
         ],
         "file_mask": "*.parquet",
-        "fill_empty_values": false
+        "fill_empty_values": false,
+        "memory_limit": "500MB",
+        "preserve_insertion_order": false
     }
 }
 ```
@@ -45,6 +47,8 @@ A sample of the configuration object:
 - `file_mask` (optional) - A glob-like syntax defining files, which should be included. Can be used for filtering files, or extensions. When not specified, defaults to `*.parquet`, i.e. all files with `.parquet` extension are included.
 - `debug` (optional) - A boolean value. If `true`, extra logging is added. Default is `false`.
 - `fill_empty_values` (optional) - A boolean value. If `true`, missing columns will be filled with appropriate default values based on the column type. Default is `false`.
+- `memory_limit` (optional) - A string value that specifies the maximum memory limit for DuckDB inside the processor. The default value is `768MB`. You can try to increase this limit if the processor fails due to an Out of Memory (OOM) error. However, the total memory limit for the entire processor is 1024MB, and it is recommended to leave at least 250MB for the Python process.
+- `preserve_insertion_order` (optional) - A boolean value that controls if the original insertion order of rows is preserved. When set to `false`, the order is not guaranteed, which reduces memory consumption. The default is `true`.
 
 ### Column Type Default Values
 
