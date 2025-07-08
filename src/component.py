@@ -19,7 +19,7 @@ class ComponentConfig(BaseModel):
     debug: bool = Field(default=False, description="Enable debug logging")
     fill_empty_values: bool = Field(default=False, description="Fill empty values with defaults")
     mode: Optional[str] = Field(default="fast", description="Mode for backward compatibility")
-    memory_limit: Optional[str] = Field(default="768MB", description="Memory limit for DuckDB")
+    memory_limit: Optional[str] = Field(default="1024MB", description="Memory limit for DuckDB")
     preserve_insertion_order: Optional[bool] = Field(default=True, description="Preserve insertion order")
 
 
