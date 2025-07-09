@@ -49,11 +49,15 @@ class Component(ComponentBase):
 
     def __init_duckdb(self) -> DuckDBPyConnection:
         os.makedirs(DUCK_DB_DIR, exist_ok=True)
+
+        # Optimalizace podle DuckDB Performance Guide
         config = {
             "temp_directory": DUCK_DB_DIR,
-            "threads": "2",
+            "threads": "1",
             "max_memory": self.memory_limit,
-            "preserve_insertion_order": self.preserve_insertion_order,
+            "preserve_insertion_order": False,
+            "enable_external_access": True,
+            "force_compression": "uncompressed",
         }
         return connect(config=config)
 
@@ -108,6 +112,7 @@ class Component(ComponentBase):
 
         parquet_glob = os.path.join(self.files_in_path, "**", self.file_mask)
 
+        # Use only valid parameters for read_parquet
         read_params = []
         if self.mode in ("fill", "strict"):
             read_params.append("union_by_name=true")
@@ -118,46 +123,236 @@ class Component(ComponentBase):
         selected_columns = ", ".join(self.columns) if self.columns else "*"
         selected_columns += ", filename" if self.include_filename and selected_columns != "*" else ""
 
-        stage_query = f"""
-        CREATE OR REPLACE TABLE stage AS
-        SELECT {selected_columns}
+        # Optimized query with out-of-core processing
+        # Use streaming approach without staging table
+        if self.streaming_export:
+            # But we need to handle filename column properly
+            if self.include_filename:
+                # Use staging table for filename processing
+                stage_query = f"""
+                CREATE OR REPLACE TABLE stage AS
+                SELECT {selected_columns}
+                FROM read_parquet('{parquet_glob}', filename=True{read_params_str})
+                """
+
+                if self.debug:
+                    logging.info(f"Executing staging query for filename processing: {stage_query}")
+
+                self.duck.execute(stage_query)
+
+                # Process filename column
+                self.duck.execute("""
+                    ALTER TABLE stage ADD COLUMN parquet_filename TEXT;
+                """)
+                self.duck.execute("""
+                    UPDATE stage
+                    SET parquet_filename = concat('/', regexp_replace(filename, '^.*[\\\\/]', ''));
+                """)
+                self.duck.execute("ALTER TABLE stage DROP COLUMN IF EXISTS filename;")
+
+                # Export with processed filename
+                copy_query = f"""
+                COPY (
+                    SELECT * FROM stage
+                ) TO '{table_path}' (
+                    HEADER FALSE,
+                    DELIMITER ',',
+                    FORMAT CSV
+                )
+                """
+
+                self.duck.execute(copy_query)
+
+                # For manifest - get schema BEFORE dropping table
+                schema_query = "DESCRIBE stage;"
+
+                # Build manifest BEFORE cleanup
+                table_meta = self.duck.execute(schema_query).fetchall()
+                schema = OrderedDict(
+                    {c[0]: ColumnDefinition(data_types=self._convert_dtypes(c[1])) for c in table_meta}
+                )
+
+                out_table = self.create_out_table_definition(
+                    self.table_name,
+                    schema=schema,
+                    primary_key=self.primary_keys,
+                    incremental=self.incremental,
+                    has_header=False,
+                )
+
+                self.write_manifest(out_table)
+
+                # Cleanup AFTER manifest is written
+                self.duck.execute("DROP TABLE IF EXISTS stage")
+            else:
+                # Direct streaming export without filename
+                copy_query = f"""
+                COPY (
+                    SELECT {selected_columns}
+                    FROM read_parquet('{parquet_glob}', filename=True{read_params_str})
+                ) TO '{table_path}' (
+                    HEADER FALSE,
+                    DELIMITER ',',
+                    FORMAT CSV
+                )
+                """
+
+                if self.debug:
+                    logging.info("Executing streaming export query")
+
+                self.duck.execute(copy_query)
+
+                # For manifest we need schema - use sampling
+                schema_query = f"""
+                DESCRIBE (
+                    SELECT {selected_columns}
+                    FROM read_parquet('{parquet_glob}', filename=True{read_params_str})
+                    LIMIT 1
+                )
+                """
+
+                # Build manifest
+                table_meta = self.duck.execute(schema_query).fetchall()
+                schema = OrderedDict(
+                    {c[0]: ColumnDefinition(data_types=self._convert_dtypes(c[1])) for c in table_meta}
+                )
+
+                out_table = self.create_out_table_definition(
+                    self.table_name,
+                    schema=schema,
+                    primary_key=self.primary_keys,
+                    incremental=self.incremental,
+                    has_header=False,
+                )
+
+                self.write_manifest(out_table)
+        else:
+            # Fallback to staging table for smaller files
+            stage_query = f"""
+            CREATE OR REPLACE TABLE stage AS
+            SELECT {selected_columns}
+            FROM read_parquet('{parquet_glob}', filename=True{read_params_str})
+            """
+
+            if self.debug:
+                logging.info(f"Executing staging query: {stage_query}")
+
+            self.duck.execute(stage_query)
+
+            # Process filename column
+            if self.include_filename:
+                self.duck.execute("""
+                    ALTER TABLE stage ADD COLUMN parquet_filename TEXT;
+                """)
+                self.duck.execute("""
+                    UPDATE stage
+                    SET parquet_filename = concat('/', regexp_replace(filename, '^.*[\\\\/]', ''));
+                """)
+                self.duck.execute("ALTER TABLE stage DROP COLUMN IF EXISTS filename;")
+            else:
+                self.duck.execute("ALTER TABLE stage DROP COLUMN IF EXISTS filename")
+
+            # Export to CSV
+            copy_query = f"COPY stage TO '{table_path}' (HEADER FALSE, DELIMITER ',')"
+            self.duck.execute(copy_query)
+
+            # For manifest - get schema BEFORE dropping table
+            schema_query = "DESCRIBE stage;"
+
+            # Build manifest BEFORE cleanup
+            table_meta = self.duck.execute(schema_query).fetchall()
+            schema = OrderedDict({c[0]: ColumnDefinition(data_types=self._convert_dtypes(c[1])) for c in table_meta})
+
+            out_table = self.create_out_table_definition(
+                self.table_name,
+                schema=schema,
+                primary_key=self.primary_keys,
+                incremental=self.incremental,
+                has_header=False,
+            )
+
+            self.write_manifest(out_table)
+
+            # Cleanup AFTER manifest is written
+            self.duck.execute("DROP TABLE IF EXISTS stage")
+
+    def process_large_files(self):
+        """Specializovaná metoda pro velmi velké soubory s chunked processing"""
+        table_path = os.path.join(self.tables_out_path, self.table_name)
+        os.makedirs(os.path.dirname(table_path), exist_ok=True)
+
+        parquet_glob = os.path.join(self.files_in_path, "**", self.file_mask)
+
+        read_params = []
+        if self.mode in ("fill", "strict"):
+            read_params.append("union_by_name=true")
+
+        read_params_str = ", ".join(read_params) if read_params else ""
+        read_params_str = f", {read_params_str}" if read_params_str else ""
+
+        selected_columns = ", ".join(self.columns) if self.columns else "*"
+        selected_columns += ", filename" if self.include_filename and selected_columns != "*" else ""
+
+        # Use chunked processing according to DuckDB Performance Guide
+        # Get total number of rows
+        count_query = f"""
+        SELECT COUNT(*) as total_rows
         FROM read_parquet('{parquet_glob}', filename=True{read_params_str})
         """
+        total_rows = self.duck.execute(count_query).fetchone()[0]
 
         if self.debug:
-            logging.info(f"Executing query: {stage_query}")
+            logging.info(f"Total rows to process: {total_rows}")
 
-        self.duck.execute(stage_query)
+        # For very large files use chunked processing
+        chunk_size = 100000  # Optimized according to DuckDB recommendations
+        offset = 0
+        chunk_number = 0
 
-        if self.include_filename:
-            self.duck.execute("""
-                ALTER TABLE stage ADD COLUMN parquet_filename TEXT;
-            """)
-            self.duck.execute("""
-                UPDATE stage
-                SET parquet_filename = concat('/', regexp_replace(filename, '^.*[\\\\/]', ''));
-            """)
-            self.duck.execute("ALTER TABLE stage DROP COLUMN IF EXISTS filename;")
-        else:
-            self.duck.execute("ALTER TABLE stage DROP COLUMN IF EXISTS filename")
-
-        if self.streaming_export:
-            copy_query = f"""
+        while offset < total_rows:
+            chunk_query = f"""
             COPY (
-                SELECT * FROM stage
-            ) TO '{table_path}' (
+                SELECT {selected_columns}
+                FROM read_parquet('{parquet_glob}', filename=True{read_params_str})
+                LIMIT {chunk_size} OFFSET {offset}
+            ) TO '{table_path}.part{chunk_number:04d}' (
                 HEADER FALSE,
                 DELIMITER ',',
                 FORMAT CSV
             )
             """
-        else:
-            copy_query = f"COPY stage TO '{table_path}' (HEADER FALSE, DELIMITER ',')"
 
-        self.duck.execute(copy_query)
+            if self.debug:
+                logging.info(
+                    f"Processing chunk {chunk_number + 1}: rows {offset + 1} to {min(offset + chunk_size, total_rows)}"
+                )
+
+            self.duck.execute(chunk_query)
+
+            offset += chunk_size
+            chunk_number += 1
+
+        # Join all parts
+        if chunk_number > 1:
+            self.duck.execute(f"""
+            COPY (
+                SELECT * FROM read_csv_auto('{table_path}.part*')
+            ) TO '{table_path}' (
+                HEADER FALSE,
+                DELIMITER ',',
+                FORMAT CSV
+            )
+            """)
+
+            # Cleanup temp files
+            for i in range(chunk_number):
+                temp_file = f"{table_path}.part{i:04d}"
+                if os.path.exists(temp_file):
+                    os.remove(temp_file)
 
         # Build manifest
-        table_meta = self.duck.execute("""DESCRIBE stage;""").fetchall()
+        schema_query = f"DESCRIBE (SELECT * FROM read_csv_auto('{table_path}') LIMIT 1)"
+        table_meta = self.duck.execute(schema_query).fetchall()
         schema = OrderedDict({c[0]: ColumnDefinition(data_types=self._convert_dtypes(c[1])) for c in table_meta})
 
         out_table = self.create_out_table_definition(
@@ -170,10 +365,21 @@ class Component(ComponentBase):
 
         self.write_manifest(out_table)
 
-        self.duck.execute("DROP TABLE IF EXISTS stage")
-
     def run(self):
-        self.process()
+        # Automaticky vybrat metodu podle velikosti souborů
+        if self.streaming_export:
+            # Zkusit streaming first
+            try:
+                self.process()
+            except Exception as e:
+                if "Out of Memory" in str(e):
+                    if self.debug:
+                        logging.info("Streaming failed, trying chunked processing")
+                    self.process_large_files()
+                else:
+                    raise
+        else:
+            self.process()
 
 
 """
