@@ -50,7 +50,7 @@ class Component(ComponentBase):
     def __init_duckdb(self) -> DuckDBPyConnection:
         os.makedirs(DUCK_DB_DIR, exist_ok=True)
 
-        # Optimalizace podle DuckDB Performance Guide
+        # Optimizations according to DuckDB Performance Guide
         config = {
             "temp_directory": DUCK_DB_DIR,
             "threads": "1",
@@ -112,7 +112,6 @@ class Component(ComponentBase):
 
         parquet_glob = os.path.join(self.files_in_path, "**", self.file_mask)
 
-        # Use only valid parameters for read_parquet
         read_params = []
         if self.mode in ("fill", "strict"):
             read_params.append("union_by_name=true")
@@ -126,7 +125,6 @@ class Component(ComponentBase):
         # Optimized query with out-of-core processing
         # Use streaming approach without staging table
         if self.streaming_export:
-            # But we need to handle filename column properly
             if self.include_filename:
                 # Use staging table for filename processing
                 stage_query = f"""
@@ -202,7 +200,7 @@ class Component(ComponentBase):
 
                 self.duck.execute(copy_query)
 
-                # For manifest we need schema - use sampling
+                # Sampling for manifest
                 schema_query = f"""
                 DESCRIBE (
                     SELECT {selected_columns}
@@ -366,9 +364,9 @@ class Component(ComponentBase):
         self.write_manifest(out_table)
 
     def run(self):
-        # Automaticky vybrat metodu podle velikosti souborů
+        # Automatically select method based on file size
         if self.streaming_export:
-            # Zkusit streaming first
+            # Try streaming first
             try:
                 self.process()
             except Exception as e:
