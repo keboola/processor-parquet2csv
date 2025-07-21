@@ -1,12 +1,12 @@
-import os
 import logging
+import os
 from collections import OrderedDict
 from typing import List, Optional
-from pydantic import BaseModel, Field
 
+from duckdb import DuckDBPyConnection, connect
 from keboola.component import ComponentBase, UserException
 from keboola.component.dao import BaseType, ColumnDefinition
-from duckdb import connect, DuckDBPyConnection
+from pydantic import BaseModel, Field
 
 
 class ComponentConfig(BaseModel):
@@ -112,7 +112,7 @@ class Component(ComponentBase):
         if self.include_filename:
             self.duck.execute("""
             CREATE VIEW out AS
-            (SELECT * EXCLUDE (filename), concat('/', regexp_replace(filename, '^.*[\\\\/]', '')) AS parquet_filename
+            (SELECT * EXCLUDE (filename), CONCAT('/', PARSE_FILENAME(filename)) AS parquet_filename
             FROM stage)
             """)
         else:
