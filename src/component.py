@@ -1,12 +1,12 @@
-import os
 import logging
+import os
 from collections import OrderedDict
 from typing import List, Optional
-from pydantic import BaseModel, Field
 
+from duckdb import DuckDBPyConnection, connect
 from keboola.component import ComponentBase, UserException
 from keboola.component.dao import BaseType, ColumnDefinition
-from duckdb import connect, DuckDBPyConnection
+from pydantic import BaseModel, Field
 
 
 class ComponentConfig(BaseModel):
@@ -106,25 +106,22 @@ class Component(ComponentBase):
         selected_columns = ", ".join(self.columns) if self.columns else "*"
         selected_columns += ", filename" if self.include_filename and selected_columns != "*" else ""
 
-        stage_query = f"CREATE OR REPLACE TABLE stage AS SELECT {selected_columns} FROM read_parquet('{parquet_glob}', filename=True{union_by_name_param})"  # noqa: E501
+        stage_query = f"CREATE VIEW stage AS SELECT {selected_columns} FROM read_parquet('{parquet_glob}', filename=True{union_by_name_param})"  # noqa: E501
         self.duck.execute(stage_query)
 
         if self.include_filename:
             self.duck.execute("""
-                ALTER TABLE stage ADD COLUMN parquet_filename TEXT;
+            CREATE VIEW out AS
+            (SELECT * EXCLUDE (filename), CONCAT('/', PARSE_FILENAME(filename)) AS parquet_filename
+            FROM stage)
             """)
-            self.duck.execute("""
-                UPDATE stage
-                SET parquet_filename = concat('/', regexp_replace(filename, '^.*[\\\\/]', ''));
-            """)
-            self.duck.execute("ALTER TABLE stage DROP COLUMN IF EXISTS filename;")
         else:
-            self.duck.execute("ALTER TABLE stage DROP COLUMN IF EXISTS filename")
+            self.duck.execute("CREATE VIEW out AS (SELECT * EXCLUDE (filename) FROM stage)")
 
-        self.duck.execute(f"COPY stage TO '{table_path}' (HEADER FALSE, DELIMITER ',')")
+        self.duck.execute(f"COPY out TO '{table_path}' (HEADER FALSE, DELIMITER ',')")
 
         # Build manifest
-        table_meta = self.duck.execute("""DESCRIBE stage;""").fetchall()
+        table_meta = self.duck.execute("""DESCRIBE out;""").fetchall()
         schema = OrderedDict({c[0]: ColumnDefinition(data_types=self._convert_dtypes(c[1])) for c in table_meta})
 
         out_table = self.create_out_table_definition(
@@ -136,8 +133,6 @@ class Component(ComponentBase):
         )
 
         self.write_manifest(out_table)
-
-        self.duck.execute("DROP TABLE IF EXISTS stage")
 
     def run(self):
         self.process()

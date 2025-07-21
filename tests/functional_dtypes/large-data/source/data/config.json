@@ -1,0 +1,10 @@
+{
+  "parameters": {
+    "mode": "fast",
+    "table_name": "table.csv",
+    "incremental": true,
+    "include_filename": true,
+    "debug": true
+  },
+  "image_parameters": {}
+}
